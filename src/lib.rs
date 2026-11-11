@@ -3,8 +3,8 @@
 mod layout;
 mod source;
 
-use layout::{Cells, Scopes, align, assignment, wrap};
-use source::{Action, Card, Record, cards, records, tokens};
+use layout::{Cells, Scopes, align, assignment, clauses, move_to_indent, wrap};
+use source::{Action, Card, Record, cards, records};
 
 struct Row<'a> {
     record: Record<'a>,
@@ -34,19 +34,26 @@ impl Row<'_> {
         code: &str,
         newline: &str,
         padded: bool,
+        pending_to: &mut Option<usize>,
     ) -> Result<(), String> {
         let record = &self.record;
+        let parts = clauses(code);
+        let indent = move_to_indent(&parts, self.depth, record, pending_to)
+            .map_err(|e| format!("line {}: {e}", record.first().number))?;
         if record.action == Action::Keep {
             out.push_str(record.first().raw);
             out.push_str(record.ending);
             return Ok(());
         }
-        let lexed = tokens(code);
-        for (index, &(token, card)) in record.anchors.iter().enumerate() {
+        let mut remaining = parts.as_slice();
+        for (index, &(_, card)) in record.anchors.iter().enumerate() {
             let next = record.anchors.get(index + 1);
-            let end = next.map_or(code.len(), |&(t, _)| lexed[t].start);
-            let part = code[lexed[token].start..end].trim_end();
-            let lines = wrap(part, self.depth, index != 0)
+            let end = next.map_or(remaining.len(), |&(token, _)| {
+                remaining.partition_point(|p| p.token < token)
+            });
+            let (card_parts, rest) = remaining.split_at(end);
+            remaining = rest;
+            let lines = wrap(card_parts, self.depth, indent)
                 .map_err(|e| format!("line {}: {e}", card.number))?;
             for (i, line) in lines.iter().enumerate() {
                 let original = (i == 0).then_some(&card);
@@ -122,6 +129,7 @@ pub fn format_source(source: &str) -> Result<String, String> {
     let mut out = String::with_capacity(source.len());
     let mut blanks = Vec::new();
     let mut after_group = false;
+    let mut pending_to = None;
     let mut remaining = rows.as_slice();
     while let Some((row, rest)) = remaining.split_first() {
         if row.record.action == Action::Blank {
@@ -147,11 +155,11 @@ pub fn format_source(source: &str) -> Result<String, String> {
                 .filter_map(|r| r.cells.as_ref())
                 .collect();
             for (line, r) in align(&cells).iter().zip(remaining) {
-                r.write(&mut out, line, newline, padded)?;
+                r.write(&mut out, line, newline, padded, &mut pending_to)?;
             }
             remaining = &remaining[cells.len()..];
         } else {
-            row.write(&mut out, &row.record.code, newline, padded)?;
+            row.write(&mut out, &row.record.code, newline, padded, &mut pending_to)?;
             remaining = rest;
         }
         after_group = group;

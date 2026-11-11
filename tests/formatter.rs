@@ -78,7 +78,7 @@ fn wraps_immediately_before_a_keyword_using_column_72() {
         let expected = if n <= 61 {
             area_b(&format!("{prefix} TO y"))
         } else {
-            area_b(&format!("{prefix}\n   TO y"))
+            area_b(&format!("{prefix}\n  TO y"))
         };
         layout(&input, &expected);
     }
@@ -104,6 +104,10 @@ fn retains_metadata_and_record_width_when_wrap_adds_an_unnumbered_card() {
     assert_eq!(&lines[2][..6], "00A200");
     assert_eq!(&lines[2][72..], "TO IN   ");
     assert_eq!(lines[3].trim(), "TO result");
+    assert_eq!(
+        lines[2].find("MOVE").unwrap() + 3,
+        lines[3].find("TO result").unwrap() + 1
+    );
     assert_eq!(&lines[3][..7], "       ");
     assert_eq!(&lines[3][72..], "        ");
     assert_eq!(&lines[4][72..], "LASTMOVE");
@@ -115,11 +119,68 @@ fn retains_metadata_and_record_width_when_wrap_adds_an_unnumbered_card() {
 fn preserves_distinct_metadata_on_existing_keyword_continuations() {
     let src = [
         card("000100", ' ', "    MOVE id", "SRC"),
-        card("000200", ' ', "       TO out-id", "DEST"),
+        card("000200", ' ', "      TO out-id", "DEST"),
         card("000300", ' ', "       IN group-id.", "QUAL"),
     ]
     .join("\r\n");
     layout(&src, &src);
+}
+
+#[test]
+fn aligns_to_with_the_actual_move_column_when_either_clause_is_long() {
+    for (source, destination) in [
+        (format!("'{}'", "x".repeat(52)), "target".to_owned()),
+        (
+            "source".to_owned(),
+            format!("{} {}", "a".repeat(27), "b".repeat(28)),
+        ),
+    ] {
+        let input = area_b(&format!("IF ok\nmove {source}\nto {destination}\nEND-IF."));
+        let expected = area_b(&format!(
+            "IF ok\n\nmove {source}\n  to {destination}\n\nEND-IF."
+        ));
+        layout(&input, &expected);
+    }
+}
+
+#[test]
+fn set_continuation_uses_the_normal_hanging_indent() {
+    let input = "000100     SET my-flag\n000200     TO TRUE";
+    layout(input, "000100     SET my-flag\n000200        TO TRUE");
+}
+
+#[test]
+fn reports_a_to_clause_that_cannot_fit_even_with_move_in_column_12() {
+    let targets = format!("{} {}", "a".repeat(28), "b".repeat(28));
+    let input = area_b(&format!("MOVE src\nTO {targets}"));
+    assert!(
+        format_source(&input)
+            .unwrap_err()
+            .contains("aligned TO clause cannot fit")
+    );
+}
+
+#[test]
+fn aligns_across_comments_using_the_printed_move_position() {
+    let input = concat!(
+        "000100     IF ok\n",
+        "000200     MOVE src\n",
+        "000210* Keep this text here.\n",
+        "000300     TO dst\n",
+        "000400         Move x   *> keep these spaces\n",
+        "000500     to y\n",
+        "000600     END-IF."
+    );
+    let expected = concat!(
+        "000100     IF ok\n",
+        "000200        MOVE src\n",
+        "000210* Keep this text here.\n",
+        "000300          TO dst\n",
+        "000400         Move x   *> keep these spaces\n",
+        "000500           to y\n",
+        "000600     END-IF."
+    );
+    layout(input, expected);
 }
 
 #[test]

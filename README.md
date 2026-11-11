@@ -53,7 +53,8 @@ Formatted output:
 - Wrap before a clause keyword such as `TO`, `IN`, `AND`, or `GIVING` before
   code would cross column 72. New continuation records start in Area B with a
   blank indicator. Existing numbered or identified keyword continuations keep
-  their record boundary.
+  their record boundary. When `TO` starts a continuation, place its `O` under
+  the `E` in `MOVE`. If needed, move the pair left together to fit column 72.
 - Indent `IF`/`ELSE`, inline `PERFORM`, and `EVALUATE` or `SEARCH` with `WHEN`
   branches by three spaces per level. For an indivisible clause, use the
   deepest whole indent that fits. Report an error if it cannot fit in Area B.
