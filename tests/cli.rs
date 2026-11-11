@@ -15,12 +15,12 @@ fn run(args: &[&str], input: &[u8]) -> Output {
 
 #[test]
 fn stdin_stdout_and_check_exit_codes() {
-    let input = b"IF ok\r\nMOVE x TO y\r\nEND-IF.\r\n";
+    let input = b"000100     IF ok\r\n000200     MOVE x TO y\r\n000300     END-IF.\r\n";
     let formatted = run(&[], input);
     assert!(formatted.status.success());
     assert_eq!(
         formatted.stdout,
-        b"IF ok\r\n\r\n   MOVE x TO y\r\n\r\nEND-IF.\r\n"
+        b"000100     IF ok\r\n\r\n000200        MOVE x TO y\r\n\r\n000300     END-IF.\r\n"
     );
     let changes = run(&["--check"], input);
     assert_eq!(changes.status.code(), Some(1));
@@ -36,7 +36,10 @@ fn file_input_and_errors() {
             .success()
     );
     for args in [&["--bad-option"][..], &["missing.cob"], &[]] {
-        let failure = run(args, b">>source fixed\n");
+        let failure = run(
+            args,
+            b"           DISPLAY a.\n000200!    Invalid indicator.\n",
+        );
         assert_eq!(failure.status.code(), Some(2));
         assert!(failure.stdout.is_empty());
         assert!(!failure.stderr.is_empty());

@@ -99,140 +99,297 @@ fn physical_lines(mut source: &str) -> impl Iterator<Item = (&str, &str)> {
     })
 }
 
-fn fixed_record(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    if bytes.len() < 7 {
-        return false;
-    }
-    let sequence = &bytes[..6];
-    let indicator = bytes[6];
-    (sequence.iter().all(u8::is_ascii_digit) && b" */Dd-".contains(&indicator))
-        || (sequence == b"      "
-            && (matches!(indicator, b'/' | b'-')
-                || (indicator == b'*' && bytes.get(7) != Some(&b'>'))))
+const PROGRAM_COLUMNS: usize = 65; // Columns 8 through 72.
+
+fn split_columns(text: &str, count: usize) -> (&str, &str) {
+    let end = text
+        .char_indices()
+        .nth(count)
+        .map_or(text.len(), |(i, _)| i);
+    text.split_at(end)
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Action {
+#[derive(Clone, Copy)]
+pub(crate) struct Card<'a> {
+    pub raw: &'a str,
+    pub ending: &'a str,
+    pub number: usize,
+    pub sequence: &'a str,
+    pub area: &'a str,
+    pub identification: &'a str,
+    pub width: usize,
+    indicator: char,
+    control: bool,
+    protected: bool,
+}
+
+impl Card<'_> {
+    pub fn marked(&self) -> bool {
+        !self.sequence.trim().is_empty() || !self.identification.trim().is_empty()
+    }
+
+    fn blank(&self) -> bool {
+        self.indicator == ' ' && self.area.trim().is_empty()
+    }
+}
+
+pub(crate) fn cards(source: &str) -> Result<Vec<Card<'_>>, String> {
+    let mut cards = Vec::new();
+    for (i, (raw, ending)) in physical_lines(source).enumerate() {
+        let width = raw.chars().count();
+        if width > 80 {
+            return Err(format!("line {}: record exceeds 80 columns", i + 1));
+        }
+        let (sequence, rest) = split_columns(raw, 6);
+        let (indicator, rest) = split_columns(rest, 1);
+        let indicator = indicator.chars().next().unwrap_or(' ');
+        let (area, identification) = split_columns(rest, PROGRAM_COLUMNS);
+        let control_word = |s: &str| {
+            s.split_whitespace()
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("CBL") || w.eq_ignore_ascii_case("PROCESS"))
+        };
+        let control = control_word(raw) || (indicator == ' ' && control_word(area));
+        if !control && !matches!(indicator, ' ' | '*' | '/' | 'D' | 'd' | '-') {
+            return Err(format!(
+                "line {}: invalid fixed-format indicator in column 7",
+                i + 1
+            ));
+        }
+        cards.push(Card {
+            raw,
+            ending,
+            number: i + 1,
+            sequence,
+            indicator,
+            area,
+            identification,
+            width,
+            control,
+            protected: false,
+        });
+    }
+
+    // A hyphen can continue a word or literal. Spacing on its predecessor,
+    // including implicit spaces through column 72, is part of the source.
+    let mut followed_by_hyphen = false;
+    for card in cards.iter_mut().rev() {
+        if matches!(card.indicator, '*' | '/' | 'D' | 'd')
+            || card.blank()
+            || card.area.trim_start().starts_with("*>")
+        {
+            continue;
+        }
+        card.protected = followed_by_hyphen || card.indicator == '-';
+        followed_by_hyphen = card.indicator == '-';
+    }
+    Ok(cards)
+}
+
+#[derive(PartialEq)]
+pub(crate) enum Action {
     Format,
     Keep,
-    // Keep the original line, but use this prefix to track block indentation.
-    KeepWithCode(usize),
+    Blank,
 }
 
 pub(crate) struct Record<'a> {
-    pub text: Cow<'a, str>,
+    // A numbered or identified continuation keeps its original keyword boundary.
+    // Indices count COBOL tokens, so alignment spaces cannot move a boundary.
+    pub anchors: Vec<(usize, Card<'a>)>,
+    pub code: Cow<'a, str>,
     pub ending: &'a str,
-    action: Action,
+    pub action: Action,
+    token_count: usize,
 }
 
 impl Record<'_> {
-    pub fn verbatim(&self) -> bool {
-        self.action != Action::Format
-    }
-
-    pub fn code(&self) -> &str {
-        match self.action {
-            Action::Format => &self.text,
-            Action::Keep => "",
-            Action::KeepWithCode(end) => &self.text[..end],
-        }
+    pub fn first(&self) -> &Card<'_> {
+        &self.anchors[0].1
     }
 }
 
-pub(crate) fn records(source: &str) -> Result<Vec<Record<'_>>, String> {
-    let mut result: Vec<Record<'_>> = Vec::new();
-    let mut procedure = true; // Also accept standalone procedure snippets.
-    let mut explicit_free = false;
-    let mut embedded = false;
-    for (index, (line, ending)) in physical_lines(source).enumerate() {
-        let error = |message: &str| format!("line {}: {message}", index + 1);
-        let directive = line.trim_start().strip_prefix(">>");
-        if let Some(directive) = directive {
-            let mut words = directive.split_whitespace();
-            if words
-                .next()
-                .is_some_and(|w| w.eq_ignore_ascii_case("SOURCE"))
-            {
-                let format = words
-                    .find(|w| !w.eq_ignore_ascii_case("FORMAT") && !w.eq_ignore_ascii_case("IS"));
-                if !format.is_some_and(|w| w.eq_ignore_ascii_case("FREE")) {
-                    return Err(error("only free-format COBOL is supported"));
-                }
-                explicit_free = true;
-            }
-        }
-        let mut lexed = tokens(line);
-        let comment = lexed
-            .last()
-            .filter(|t| t.kind == TokenKind::Comment)
-            .map(|t| t.start);
-        if comment.is_some() {
-            lexed.pop();
-        }
-        let first = lexed.first().map_or("", |t| t.text);
-        let division = lexed
-            .get(1)
-            .is_some_and(|t| t.text.eq_ignore_ascii_case("DIVISION"))
+fn area_a_header(lexed: &[Token<'_>], area: &str) -> bool {
+    let first = lexed.first().map_or("", |t| t.text).to_ascii_uppercase();
+    let second = lexed.get(1).map_or("", |t| t.text).to_ascii_uppercase();
+    let statement = matches!(
+        first.as_str(),
+        "GOBACK"
+            | "CONTINUE"
+            | "EXIT"
+            | "END-IF"
+            | "END-EVALUATE"
+            | "END-SEARCH"
+            | "END-PERFORM"
+            | "END-READ"
+            | "END-WRITE"
+            | "END-CALL"
+            | "END-ADD"
+            | "END-COMPUTE"
+            | "END-DELETE"
+            | "END-DIVIDE"
+            | "END-MULTIPLY"
+            | "END-RECEIVE"
+            | "END-RETURN"
+            | "END-REWRITE"
+            | "END-START"
+            | "END-STRING"
+            | "END-SUBTRACT"
+            | "END-UNSTRING"
+            | "END-ACCEPT"
+            | "END-DISPLAY"
+            | "END-INVOKE"
+            | "END-JSON"
+            | "END-XML"
+    );
+    let paragraph = lexed.len() == 2 && second == "." && !area.starts_with("    ") && !statement;
+    paragraph
+        || second == "SECTION"
+        || first == "DECLARATIVES"
+        || (first == "END"
             && matches!(
-                first.to_ascii_uppercase().as_str(),
-                "ID" | "IDENTIFICATION" | "ENVIRONMENT" | "DATA" | "PROCEDURE"
-            );
-        if !explicit_free && (fixed_record(line) || (division && line.starts_with("       "))) {
-            return Err(error("input looks like fixed-format COBOL"));
-        }
-        if division {
-            procedure = first.eq_ignore_ascii_case("PROCEDURE");
-        }
-        if first.eq_ignore_ascii_case("EXEC") {
-            embedded = true;
-        }
-        let action = if !procedure || division || embedded || directive.is_some() {
-            Action::Keep
+                second.as_str(),
+                "DECLARATIVES" | "PROGRAM" | "CLASS" | "METHOD"
+            ))
+}
+
+pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
+    let mut result: Vec<Record<'_>> = Vec::new();
+    let mut procedure = true; // Also accept fixed-format procedure snippets.
+    let mut embedded = false;
+    let mut first_code = true;
+    for card in cards {
+        let mut code = card.area.trim();
+        let mut action = Action::Keep;
+        let mut count = 0;
+        if card.control {
+            code = "";
+        } else if card.blank() {
+            action = Action::Blank;
+        } else if card.indicator != ' ' {
+            let end_sentence = card.indicator == '-'
+                && tokens(code)
+                    .into_iter()
+                    .rfind(|t| t.kind != TokenKind::Comment)
+                    .is_some_and(|t| t.text == ".");
+            code = if end_sentence { "." } else { "" };
         } else {
-            if lexed.iter().any(|t| t.kind == TokenKind::UnclosedLiteral) {
-                return Err(error("continued literals are unsupported"));
+            let mut lexed = tokens(code);
+            let comment = lexed.last().is_some_and(|t| t.kind == TokenKind::Comment);
+            if comment {
+                let start = lexed.pop().unwrap().start;
+                code = code[..start].trim_end();
             }
-            if lexed
-                .iter()
-                .any(|t| t.text == "=" && line[t.start..].starts_with("=="))
+            count = lexed.len();
+            let first = lexed.first().map_or("", |t| t.text);
+            let second = lexed.get(1).map_or("", |t| t.text);
+            let division = !embedded
+                && second.eq_ignore_ascii_case("DIVISION")
+                && matches!(
+                    first.to_ascii_uppercase().as_str(),
+                    "ID" | "IDENTIFICATION" | "ENVIRONMENT" | "DATA" | "PROCEDURE"
+                );
+            if division {
+                procedure = first.eq_ignore_ascii_case("PROCEDURE");
+            }
+            // A source member can be a data copybook without a division header.
+            if first_code
+                && (matches!(first.to_ascii_uppercase().as_str(), "FD" | "SD")
+                    || (first.len() == 2
+                        && matches!(first.parse::<u8>(), Ok(1..=49 | 66 | 77 | 78 | 88))
+                        && !second.is_empty()
+                        && second != "."))
             {
-                return Err(error("COBOL pseudo-text is unsupported"));
+                procedure = false;
             }
-            match comment {
-                Some(end) => Action::KeepWithCode(end),
-                None => Action::Format,
+            if first.eq_ignore_ascii_case("EXEC") {
+                embedded = true;
             }
-        };
-        if embedded
-            && lexed
-                .iter()
-                .any(|t| t.text.eq_ignore_ascii_case("END-EXEC"))
-        {
-            embedded = false;
+
+            let directive = code.strip_prefix(">>");
+            if directive.is_none() && !first.is_empty() {
+                first_code = false;
+            }
+            if let Some(text) = directive {
+                let mut words = text.split_whitespace();
+                if words
+                    .next()
+                    .is_some_and(|w| w.eq_ignore_ascii_case("SOURCE"))
+                    && !words
+                        .find(|w| {
+                            !w.eq_ignore_ascii_case("FORMAT") && !w.eq_ignore_ascii_case("IS")
+                        })
+                        .is_some_and(|w| w.eq_ignore_ascii_case("FIXED"))
+                {
+                    return Err(format!(
+                        "line {}: expected fixed reference format",
+                        card.number
+                    ));
+                }
+            }
+            if !procedure
+                || division
+                || embedded
+                || directive.is_some()
+                || area_a_header(&lexed, card.area)
+            {
+                code = "";
+            } else if !comment && !card.protected {
+                action = Action::Format;
+                if lexed.iter().any(|t| t.kind == TokenKind::UnclosedLiteral) {
+                    return Err(format!(
+                        "line {}: literal requires a continuation indicator",
+                        card.number
+                    ));
+                }
+                if lexed
+                    .iter()
+                    .any(|t| t.text == "=" && code[t.start..].starts_with("=="))
+                {
+                    return Err(format!(
+                        "line {}: procedure pseudo-text is unsupported",
+                        card.number
+                    ));
+                }
+                if card.raw.contains('\t') {
+                    return Err(format!(
+                        "line {}: use spaces for fixed source columns",
+                        card.number
+                    ));
+                }
+            }
+            if embedded
+                && lexed
+                    .iter()
+                    .any(|t| t.text.eq_ignore_ascii_case("END-EXEC"))
+            {
+                embedded = false;
+                if lexed.last().is_some_and(|t| t.text == ".") {
+                    code = ".";
+                }
+            }
+            if action == Action::Format
+                && is_clause(first)
+                && let Some(previous) = result.last_mut()
+                && previous.action == Action::Format
+                && !previous.code.ends_with('.')
+            {
+                if card.marked() {
+                    previous.anchors.push((previous.token_count, card));
+                }
+                previous.code.to_mut().push(' ');
+                previous.code.to_mut().push_str(code);
+                previous.token_count += count;
+                previous.ending = card.ending;
+                continue;
+            }
         }
-        if action == Action::Format
-            && is_clause(first)
-            && let Some(previous) = result.last_mut()
-            && !previous.verbatim()
-            && !previous.text.trim().is_empty()
-            && !previous.text.ends_with('.')
-        {
-            let text = previous.text.to_mut();
-            text.push(' ');
-            text.push_str(line.trim());
-            previous.ending = ending;
-            continue;
-        }
-        let text = if action == Action::Format && !lexed.is_empty() {
-            line.trim()
-        } else {
-            line
-        };
         result.push(Record {
-            text: Cow::Borrowed(text),
-            ending,
+            anchors: vec![(0, card)],
+            code: Cow::Borrowed(code),
+            ending: card.ending,
             action,
+            token_count: count,
         });
     }
     Ok(result)

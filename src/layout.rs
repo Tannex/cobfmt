@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::source::{TokenKind, is_clause, tokens};
 
-const WIDTH: usize = 80;
 const INDENT: usize = 3;
 
 #[derive(Default)]
@@ -143,7 +142,13 @@ pub(crate) fn align(group: &[&Cells]) -> Vec<String> {
     lines
 }
 
-pub(crate) fn wrap(code: &str, depth: usize, newline: &str) -> String {
+/// Lay out Area B text. Each returned string starts at physical column 12.
+pub(crate) fn wrap(
+    code: &str,
+    depth: usize,
+    continuation: bool,
+) -> Result<Vec<String>, &'static str> {
+    const AREA_B_WIDTH: usize = 72 - 11;
     let mut starts = vec![0];
     for t in tokens(code) {
         if t.start > 0
@@ -155,25 +160,34 @@ pub(crate) fn wrap(code: &str, depth: usize, newline: &str) -> String {
         }
     }
     starts.push(code.len());
-    let mut column = depth * INDENT;
-    let mut output = " ".repeat(column);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut column = 0;
     let mut previous_end = 0;
     for window in starts.windows(2) {
         let start = window[0];
         let piece = code[start..window[1]].trim_end();
-        let gap = code[previous_end..start].chars().count();
         let length = piece.chars().count();
-        if start > 0 && column + gap + length > WIDTH {
-            column = (depth + 1) * INDENT;
-            output.push_str(newline);
-            output.extend(std::iter::repeat_n(' ', column));
+        let gap = code[previous_end..start].chars().count();
+        if start > 0 && column + gap + length > AREA_B_WIDTH {
+            lines.push(std::mem::take(&mut line));
+        }
+        if line.is_empty() {
+            if length > AREA_B_WIDTH {
+                return Err("clause cannot fit before column 73 at a keyword boundary");
+            }
+            let nesting = depth + usize::from(continuation || start != 0);
+            // Give long indivisible clauses the space they need, in whole indent levels.
+            column = INDENT * nesting.min((AREA_B_WIDTH - length) / INDENT);
+            line.extend(std::iter::repeat_n(' ', column));
         } else {
-            output.extend(std::iter::repeat_n(' ', gap));
+            line.extend(std::iter::repeat_n(' ', gap));
             column += gap;
         }
-        output.push_str(piece);
+        line.push_str(piece);
         column += length;
         previous_end = start + piece.len();
     }
-    output
+    lines.push(line);
+    Ok(lines)
 }

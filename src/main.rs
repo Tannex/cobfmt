@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const HELP: &str = "Usage: cobfmt [--check] [FILE]\n\
-Format free-format COBOL from FILE or stdin and write it to stdout.\n\
+Format IBM z/OS fixed-format COBOL from FILE or stdin and write it to stdout.\n\
 With --check, exit 0 if formatted, 1 for changes, or 2 on error.";
 
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {

@@ -1,10 +1,10 @@
-//! A single style for free-format COBOL procedure code.
+//! A single style for IBM z/OS fixed-format COBOL procedure code.
 
 mod layout;
 mod source;
 
 use layout::{Cells, Scopes, align, assignment, wrap};
-use source::{Record, records};
+use source::{Action, Card, Record, cards, records, tokens};
 
 struct Row<'a> {
     record: Record<'a>,
@@ -12,17 +12,105 @@ struct Row<'a> {
     cells: Option<Cells>,
 }
 
-/// Format a full program or a procedure snippet. Diagnostics include the source line.
+fn emit_body(out: &mut String, code: &str, card: Option<&Card<'_>>, padded: bool) {
+    let sequence = card.map_or("      ", |c| c.sequence);
+    out.push_str(sequence);
+    out.push_str("     "); // Blank indicator and Area A. First code column is 12.
+    out.push_str(code);
+    let width = 11 + code.chars().count();
+    let id = card.map_or("", |c| c.identification);
+    if !id.is_empty() {
+        out.extend(std::iter::repeat_n(' ', 72 - width));
+        out.push_str(id);
+    } else if padded {
+        out.extend(std::iter::repeat_n(' ', 80 - width));
+    }
+}
+
+impl Row<'_> {
+    fn write(
+        &self,
+        out: &mut String,
+        code: &str,
+        newline: &str,
+        padded: bool,
+    ) -> Result<(), String> {
+        let record = &self.record;
+        if record.action == Action::Keep {
+            out.push_str(record.first().raw);
+            out.push_str(record.ending);
+            return Ok(());
+        }
+        let lexed = tokens(code);
+        for (index, &(token, card)) in record.anchors.iter().enumerate() {
+            let next = record.anchors.get(index + 1);
+            let end = next.map_or(code.len(), |&(t, _)| lexed[t].start);
+            let part = code[lexed[token].start..end].trim_end();
+            let lines = wrap(part, self.depth, index != 0)
+                .map_err(|e| format!("line {}: {e}", card.number))?;
+            for (i, line) in lines.iter().enumerate() {
+                let original = (i == 0).then_some(&card);
+                emit_body(out, line, original, padded);
+                if i + 1 == lines.len() && next.is_none() {
+                    out.push_str(record.ending);
+                } else {
+                    out.push_str(if card.ending.is_empty() {
+                        newline
+                    } else {
+                        card.ending
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn write_blanks(
+    out: &mut String,
+    blanks: &[Card<'_>],
+    beside_group: bool,
+    between: bool,
+    newline: &str,
+    padded: bool,
+) {
+    // Several numbered blank cards may carry distinct metadata. Retain each one.
+    let marked = blanks.iter().any(Card::marked);
+    if beside_group && between && blanks.is_empty() {
+        if padded {
+            out.push_str(&" ".repeat(80));
+        }
+        out.push_str(newline);
+    }
+    for (i, card) in blanks.iter().enumerate() {
+        if !beside_group || card.marked() || (between && !marked && i == 0) {
+            out.push_str(card.raw);
+            out.push_str(card.ending);
+        }
+    }
+}
+
+/// Format newline-delimited, UTF-8 fixed-format records from a checkout.
 pub fn format_source(source: &str) -> Result<String, String> {
+    let cards = cards(source)?;
+    let padded = cards
+        .iter()
+        .filter(|c| !c.raw.is_empty())
+        .all(|c| c.width == 80);
+    let newline = cards
+        .iter()
+        .map(|c| c.ending)
+        .find(|e| !e.is_empty())
+        .unwrap_or("\n");
     let mut scopes = Scopes::default();
-    let rows: Vec<_> = records(source)?
+    let rows: Vec<_> = records(cards)?
         .into_iter()
         .map(|record| {
-            let depth = scopes.indent(record.code());
-            let cells = if record.verbatim() {
-                None
+            let depth = scopes.indent(&record.code);
+            let cells = if record.action == Action::Format {
+                assignment(&record.code)
             } else {
-                assignment(&record.text)
+                None
             };
             Row {
                 record,
@@ -31,33 +119,27 @@ pub fn format_source(source: &str) -> Result<String, String> {
             }
         })
         .collect();
-    let newline = rows
-        .iter()
-        .map(|r| r.record.ending)
-        .find(|s| !s.is_empty())
-        .unwrap_or("\n");
-    let mut output = String::with_capacity(source.len());
-    let mut blanks = String::new();
+    let mut out = String::with_capacity(source.len());
+    let mut blanks = Vec::new();
     let mut after_group = false;
     let mut remaining = rows.as_slice();
     while let Some((row, rest)) = remaining.split_first() {
-        let record = &row.record;
-        if record.text.trim().is_empty() {
-            blanks.push_str(&record.text);
-            blanks.push_str(record.ending);
+        if row.record.action == Action::Blank {
+            blanks.push(*row.record.first());
             remaining = rest;
             continue;
         }
         let group = row.cells.is_some();
-        if after_group || group {
-            if !output.is_empty() {
-                output.push_str(newline);
-            }
-        } else {
-            output.push_str(&blanks);
-        }
+        let between = !out.is_empty();
+        write_blanks(
+            &mut out,
+            &blanks,
+            after_group || group,
+            between,
+            newline,
+            padded,
+        );
         blanks.clear();
-
         if group {
             let cells: Vec<_> = remaining
                 .iter()
@@ -65,23 +147,15 @@ pub fn format_source(source: &str) -> Result<String, String> {
                 .filter_map(|r| r.cells.as_ref())
                 .collect();
             for (line, r) in align(&cells).iter().zip(remaining) {
-                output.push_str(&wrap(line, row.depth, newline));
-                output.push_str(r.record.ending);
+                r.write(&mut out, line, newline, padded)?;
             }
             remaining = &remaining[cells.len()..];
         } else {
-            if record.verbatim() {
-                output.push_str(&record.text);
-            } else {
-                output.push_str(&wrap(&record.text, row.depth, newline));
-            }
-            output.push_str(record.ending);
+            row.write(&mut out, &row.record.code, newline, padded)?;
             remaining = rest;
         }
         after_group = group;
     }
-    if !after_group {
-        output.push_str(&blanks);
-    }
-    Ok(output)
+    write_blanks(&mut out, &blanks, after_group, false, newline, padded);
+    Ok(out)
 }

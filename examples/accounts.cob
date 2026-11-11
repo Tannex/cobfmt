@@ -1,25 +1,30 @@
-       >>source format free
-identification division.
-program-id. accounts.
-data division.
-working-storage section.
-01 input-record.
-   05 cust-id       pic 99   value 42.
-   05 customer-name pic x(3) value "Ada".
-01 output-record.
-   05 cust-id       pic 99.
-   05 customer-name pic x(3).
-01 print-switch pic 9 value 0.
-   88 ready-to-print value 1.
-procedure division.
-if cust-id in input-record > 0
+000100 IDENTIFICATION DIVISION.
+000200 PROGRAM-ID. ACCOUNTS.
+000300 DATA DIVISION.
+000400 WORKING-STORAGE SECTION.
+000500 01 INPUT-RECORD.
+000600    05 CUST-ID       PIC 99   VALUE 42.
+000700    05 CUSTOMER-NAME PIC X(3) VALUE "Ada".
+000800 01 OUTPUT-RECORD.
+000900    05 CUST-ID       PIC 99.
+001000    05 CUSTOMER-NAME PIC X(3).
+001100 01 PRINT-SWITCH PIC 9 VALUE 0.
+001200    88 READY-TO-PRINT VALUE 1.
+001300 PROCEDURE DIVISION.
+001400 MAIN-PARAGRAPH.
+001500*    Copy the customer fields before printing.
+001600     IF CUST-ID IN INPUT-RECORD > 0
 
-   move cust-id       in input-record to cust-id       in output-record
-   move customer-name in input-record to customer-name in output-record
-   set  ready-to-print                to true
+001700        MOVE CUST-ID       IN INPUT-RECORD TO CUST-ID
+                 IN OUTPUT-RECORD
+001800        MOVE CUSTOMER-NAME IN INPUT-RECORD
+001900           TO CUSTOMER-NAME IN OUTPUT-RECORD
+002000        SET  READY-TO-PRINT                TO TRUE
 
-end-if
-if ready-to-print
-   display cust-id in output-record " " customer-name in output-record
-end-if
-goback.
+002100     END-IF
+002200     IF READY-TO-PRINT
+002300        DISPLAY CUST-ID IN OUTPUT-RECORD " " CUSTOMER-NAME
+002400           IN OUTPUT-RECORD
+002500     END-IF
+002600     GOBACK.
+002700 END PROGRAM ACCOUNTS.
