@@ -144,6 +144,23 @@ fn aligns_to_with_the_actual_move_column_when_either_clause_is_long() {
 }
 
 #[test]
+fn wrapping_does_not_depend_on_extra_spaces_before_a_clause_keyword() {
+    // With its 15-space gap the indented ADD crosses column 72, but the wrapped
+    // form rejoins with one space and fits. Both passes must agree.
+    let input = area_b(concat!(
+        "IF retry-count > 0\nIF status = '00'\n",
+        "ADD WS-LINE-AMOUNT               TO WS-INVOICE-TOTAL-AMOUNT\n",
+        "END-IF\nEND-IF."
+    ));
+    let expected = area_b(concat!(
+        "IF retry-count > 0\n   IF status = '00'\n",
+        "      ADD WS-LINE-AMOUNT TO WS-INVOICE-TOTAL-AMOUNT\n",
+        "   END-IF\nEND-IF."
+    ));
+    layout(&input, &expected);
+}
+
+#[test]
 fn set_continuation_uses_the_normal_hanging_indent() {
     let input = "000100     SET my-flag\n000200     TO TRUE";
     layout(input, "000100     SET my-flag\n000200        TO TRUE");

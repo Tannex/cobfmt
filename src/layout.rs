@@ -179,6 +179,14 @@ pub(crate) fn clauses(code: &str) -> Vec<Clause<'_>> {
     parts
 }
 
+/// Rows outside an alignment group use one space before each clause keyword,
+/// so a wrapped statement and its rejoined form measure the same.
+pub(crate) fn collapse_gaps(parts: &mut [Clause<'_>]) {
+    for part in parts {
+        part.gap = part.gap.min(1);
+    }
+}
+
 /// Choose the TO column once for a MOVE, even across numbered or comment cards.
 pub(crate) fn move_to_indent(
     parts: &[Clause<'_>],

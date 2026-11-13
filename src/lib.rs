@@ -3,7 +3,7 @@
 mod layout;
 mod source;
 
-use layout::{Cells, Scopes, align, assignment, clauses, move_to_indent, wrap};
+use layout::{Cells, Scopes, align, assignment, clauses, collapse_gaps, move_to_indent, wrap};
 use source::{Action, Card, Record, cards, records};
 
 struct Row<'a> {
@@ -37,7 +37,10 @@ impl Row<'_> {
         pending_to: &mut Option<usize>,
     ) -> Result<(), String> {
         let record = &self.record;
-        let parts = clauses(code);
+        let mut parts = clauses(code);
+        if self.cells.is_none() {
+            collapse_gaps(&mut parts);
+        }
         let indent = move_to_indent(&parts, self.depth, record, pending_to)
             .map_err(|e| format!("line {}: {e}", record.first().number))?;
         if record.action == Action::Keep {

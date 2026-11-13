@@ -51,8 +51,9 @@ Formatted output:
   blank record. Align the verbs, operands, `TO`, and corresponding `IN` or `OF`
   qualifiers with spaces. Preserve numbered or identified blank records.
 - Wrap before a clause keyword such as `TO`, `IN`, `AND`, or `GIVING` before
-  code would cross column 72. New continuation records start in Area B with a
-  blank indicator. Existing numbered or identified keyword continuations keep
+  code would cross column 72. Outside aligned `MOVE` and `SET … TO` groups, put
+  one space before each clause keyword, so formatting twice gives the same
+  result. New continuation records start in Area B with a blank indicator. Existing numbered or identified keyword continuations keep
   their record boundary. When `TO` starts a continuation, place its `O` under
   the `E` in `MOVE`. If needed, move the pair left together to fit column 72.
 - Indent `IF`/`ELSE`, inline `PERFORM`, and `EVALUATE` or `SEARCH` with `WHEN`
