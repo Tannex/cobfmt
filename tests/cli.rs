@@ -45,3 +45,22 @@ fn file_input_and_errors() {
         assert!(!failure.stderr.is_empty());
     }
 }
+
+#[test]
+fn procedure_copy_replacing_formats_and_checks_without_the_copybook() {
+    let input = concat!(
+        "       IDENTIFICATION DIVISION.\n",
+        "       PROGRAM-ID. COPYDEMO.\n",
+        "       PROCEDURE DIVISION.\n",
+        "           COPY ERROR-HANDLER REPLACING ==OLD-EXIT==\n",
+        "                               BY ==NEW-EXIT==.\n",
+        "           GOBACK.\n",
+    );
+    let formatted = run(&[], input.as_bytes());
+    assert!(formatted.status.success());
+    assert_eq!(formatted.stdout, input.as_bytes());
+    assert!(run(&["--check"], input.as_bytes()).status.success());
+    let messy = input.replace("GOBACK.", "   GOBACK.");
+    assert_eq!(run(&["--check"], messy.as_bytes()).status.code(), Some(1));
+    assert_eq!(run(&[], messy.as_bytes()).stdout, input.as_bytes());
+}

@@ -61,9 +61,10 @@ Formatted output:
 - Preserve entire comment records byte for byte, including `*` and `/` in
   column 7 and floating `*>` comments. Preserve the source record and all
   hyphen continuation records of a split word or literal.
+- Preserve `COPY` statements verbatim, including multiline `REPLACING` operands
+  delimited by `==`. Formatting a source member does not require its copybooks.
 - Preserve keyword case, declarations, and embedded `EXEC … END-EXEC` blocks.
-  This version expects each new procedure statement on its own record and
-  reports unsupported procedure pseudo-text with a line number.
+  This version expects each new procedure statement on its own record.
 
 ## Run it
 

@@ -22,6 +22,7 @@ pub(crate) fn tokens(text: &str) -> Vec<Token<'_>> {
     while let Some((start, ch)) = chars.next() {
         let kind = match ch {
             c if c.is_whitespace() => continue,
+            '=' if chars.next_if(|&(_, c)| c == '=').is_some() => TokenKind::Symbol,
             '*' if chars.next_if(|&(_, c)| c == '>').is_some() => {
                 result.push(Token {
                     start,
@@ -253,10 +254,60 @@ fn area_a_header(lexed: &[Token<'_>], area: &str) -> bool {
             ))
 }
 
+struct CopyStatement {
+    line: usize,
+    in_pseudo_text: bool,
+}
+
+// COPY is a preprocessor statement. Its operands and terminating period must
+// not affect the surrounding COBOL scopes. Keep any real code on the same card.
+fn code_outside_copy(
+    code: &str,
+    lexed: &[Token<'_>],
+    line: usize,
+    copy: &mut Option<CopyStatement>,
+) -> Option<String> {
+    if copy.is_none() && !lexed.iter().any(|t| t.text.eq_ignore_ascii_case("COPY")) {
+        return None;
+    }
+    let mut outside = String::new();
+    let mut from = 0;
+    for t in lexed {
+        if let Some(state) = copy {
+            match t.text {
+                "==" => state.in_pseudo_text = !state.in_pseudo_text,
+                "." if !state.in_pseudo_text => {
+                    let tail = &code[t.start + 1..];
+                    if tail.is_empty()
+                        || tail.starts_with(char::is_whitespace)
+                        || tail.starts_with("*>")
+                    {
+                        *copy = None;
+                        from = t.start + 1;
+                    }
+                }
+                _ => {}
+            }
+        } else if t.text.eq_ignore_ascii_case("COPY") {
+            outside.push_str(&code[from..t.start]);
+            outside.push(' ');
+            *copy = Some(CopyStatement {
+                line,
+                in_pseudo_text: false,
+            });
+        }
+    }
+    if copy.is_none() {
+        outside.push_str(&code[from..]);
+    }
+    Some(outside.trim().to_owned())
+}
+
 pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
     let mut result: Vec<Record<'_>> = Vec::new();
     let mut procedure = true; // Also accept fixed-format procedure snippets.
     let mut embedded = false;
+    let mut copy = None;
     let mut first_code = true;
     for card in cards {
         let mut code = card.area.trim();
@@ -266,7 +317,7 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             code = "";
         } else if card.blank() {
             action = Action::Blank;
-        } else if card.indicator != ' ' {
+        } else if card.indicator != ' ' && !(card.indicator == '-' && copy.is_some()) {
             let end_sentence = card.indicator == '-'
                 && tokens(code)
                     .into_iter()
@@ -283,6 +334,19 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             count = lexed.len();
             let first = lexed.first().map_or("", |t| t.text);
             let second = lexed.get(1).map_or("", |t| t.text);
+            if (copy.is_some()
+                || (!embedded && !first.eq_ignore_ascii_case("EXEC") && !code.starts_with(">>")))
+                && let Some(outside) = code_outside_copy(code, &lexed, card.number, &mut copy)
+            {
+                result.push(Record {
+                    anchors: vec![(0, card)],
+                    code: Cow::Owned(outside),
+                    ending: card.ending,
+                    action: Action::Keep,
+                    token_count: 0,
+                });
+                continue;
+            }
             let division = !embedded
                 && second.eq_ignore_ascii_case("DIVISION")
                 && matches!(
@@ -342,10 +406,7 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
                         card.number
                     ));
                 }
-                if lexed
-                    .iter()
-                    .any(|t| t.text == "=" && code[t.start..].starts_with("=="))
-                {
+                if lexed.iter().any(|t| t.text == "==") {
                     return Err(format!(
                         "line {}: procedure pseudo-text is unsupported",
                         card.number
@@ -391,6 +452,9 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             action,
             token_count: count,
         });
+    }
+    if let Some(state) = copy {
+        return Err(format!("line {}: unterminated COPY statement", state.line));
     }
     Ok(result)
 }

@@ -254,13 +254,52 @@ fn rejects_overwidth_bad_indicator_and_free_directive_without_truncating() {
         "123456!    MOVE id TO out".into(),
         "       >>SOURCE FORMAT FREE".into(),
         "           MOVE 'unfinished".into(),
-        area_b("COPY thing REPLACING ==a== BY ==b==."),
+        area_b("COPY thing REPLACING ==a== BY ==b."),
     ] {
         assert!(
             format_source(&text).unwrap_err().contains("line 1"),
             "{text:?}"
         );
     }
+}
+
+#[test]
+fn preserves_copy_cards_without_interpreting_replacement_text_as_code() {
+    let copy = [
+        card(
+            "000100",
+            ' ',
+            "    cOpY my-book replacing ==old== BY ==",
+            "ID.==",
+        ),
+        card("000200", ' ', "    END-IF.   DISPLAY '==.'", "ID2"),
+        card("000300", '*', " . == in a comment", "ID3"),
+        card("000400", ' ', "    ==   *> . == in another comment", "ID4"),
+        card("000500", ' ', "    ==other== BY ====.", "ID5"),
+    ]
+    .join("\r\n");
+    let input = format!("           IF ok\r\n{copy}\r\n           DISPLAY x\r\n           END-IF.");
+    let expected = input.replace("           DISPLAY x", "              DISPLAY x");
+    layout(&input, &expected);
+}
+
+#[test]
+fn copy_terminator_after_a_literal_continuation_resumes_normal_formatting() {
+    let copy = concat!(
+        "000100     COPY my-book REPLACING ==old== BY =='long\n",
+        "000200-    'quoted ==. text'==."
+    );
+    let input = format!("{copy}\n             DISPLAY 'COPY'.");
+    layout(&input, &format!("{copy}\n           DISPLAY 'COPY'."));
+}
+
+#[test]
+fn preserves_copy_with_surrounding_code_on_the_same_record() {
+    let input = area_b("IF ok COPY a REPLACING ==x== BY ==y==. COPY b.\nDISPLAY x\nEND-IF.");
+    layout(
+        &input,
+        &input.replace("           DISPLAY", "              DISPLAY"),
+    );
 }
 
 #[test]
