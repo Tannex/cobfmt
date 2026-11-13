@@ -125,10 +125,6 @@ pub(crate) struct Card<'a> {
 }
 
 impl Card<'_> {
-    pub fn marked(&self) -> bool {
-        !self.sequence.trim().is_empty() || !self.identification.trim().is_empty()
-    }
-
     fn blank(&self) -> bool {
         self.indicator == ' ' && self.area.trim().is_empty()
     }
@@ -195,8 +191,9 @@ pub(crate) enum Action {
 }
 
 pub(crate) struct Record<'a> {
-    // A numbered or identified continuation keeps its original keyword boundary.
-    // Indices count COBOL tokens, so alignment spaces cannot move a boundary.
+    // A continuation keeps its original record boundary, before a clause keyword
+    // or a subscript. Indices count COBOL tokens, so alignment spaces cannot
+    // move a boundary.
     pub anchors: Vec<(usize, Card<'a>)>,
     pub code: Cow<'a, str>,
     pub ending: &'a str,
@@ -444,14 +441,12 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
                 }
             }
             if action == Action::Format
-                && is_clause(first)
+                && (is_clause(first) || first == "(")
                 && let Some(previous) = result.last_mut()
                 && previous.action == Action::Format
                 && !previous.code.ends_with('.')
             {
-                if card.marked() {
-                    previous.anchors.push((previous.token_count, card));
-                }
+                previous.anchors.push((previous.token_count, card));
                 previous.code.to_mut().push(' ');
                 previous.code.to_mut().push_str(code);
                 previous.token_count += count;

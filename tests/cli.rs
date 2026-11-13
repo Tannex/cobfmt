@@ -20,7 +20,7 @@ fn stdin_stdout_and_check_exit_codes() {
     assert!(formatted.status.success());
     assert_eq!(
         formatted.stdout,
-        b"000100     IF ok\r\n\r\n000200        MOVE x TO y\r\n\r\n000300     END-IF.\r\n"
+        b"000100     IF ok\r\n000200        MOVE x TO y\r\n000300     END-IF.\r\n"
     );
     let changes = run(&["--check"], input);
     assert_eq!(changes.status.code(), Some(1));

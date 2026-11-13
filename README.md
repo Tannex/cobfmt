@@ -26,36 +26,52 @@ and [identification area](https://www.ibm.com/docs/SSBDYH_3.2/com.ibm.zexpl.ug.r
 Input may mix numbered and unnumbered records.
 
 ```cobol
-000100     IF active
-000200     MOVE id IN src TO id IN dest
+000100     IF active = 1
+000200     AND balance > 0
+000300     MOVE id IN src TO id IN dest
            MOVE customer-name IN src TO customer-name IN dest
-000400     SET ready-flag TO TRUE
-000500     END-IF
+000500     MOVE amount TO total IN entry
+000600     (idx)
+000700     SET ready-flag TO TRUE
+000800     END-IF
 ```
 
 Formatted output:
 
 ```cobol
-000100     IF active
-
-000200        MOVE id            IN src TO id            IN dest
+000100     IF     active  = 1
+000200        AND balance > 0
+000300        MOVE id            IN src TO id            IN dest
               MOVE customer-name IN src TO customer-name IN dest
-000400        SET  ready-flag           TO TRUE
-
-000500     END-IF
+000500        MOVE amount               TO total         IN entry
+000600                                     (idx)
+000700        SET  ready-flag           TO TRUE
+000800     END-IF
 ```
 
 ## Formatting rules
 
-- Surround adjacent `MOVE` and `SET … TO` statements at the same depth with one
-  blank record. Align the verbs, operands, `TO`, and corresponding `IN` or `OF`
-  qualifiers with spaces. Preserve numbered or identified blank records.
+- Lay out adjacent `MOVE` and `SET … TO` statements at the same depth as a
+  table. The verb, the source, each source `IN` or `OF` qualifier, `TO`, and
+  each target qualifier is a column as wide as its widest cell. A row without a
+  keyword leaves that cell blank. A blank or comment record ends the group.
+- Keep blank records as written. The formatter adds none and removes none.
+- Keep a statement that continues before a clause keyword on separate records.
+  A continuation hangs three spaces under its statement. When `TO` starts a
+  continuation, place its `O` under the `E` in `MOVE`. If needed, move the pair
+  left together to fit column 72.
 - Wrap before a clause keyword such as `TO`, `IN`, `AND`, or `GIVING` before
-  code would cross column 72. Outside aligned `MOVE` and `SET … TO` groups, put
-  one space before each clause keyword, so formatting twice gives the same
-  result. New continuation records start in Area B with a blank indicator. Existing numbered or identified keyword continuations keep
-  their record boundary. When `TO` starts a continuation, place its `O` under
-  the `E` in `MOVE`. If needed, move the pair left together to fit column 72.
+  code would cross column 72. New continuation records start in Area B with a
+  blank indicator. A table row that is too wide continues at `TO`, and the
+  other rows stay aligned. Rows that continue at `TO` align their sources and
+  their targets with each other. Outside a table, put one space before each
+  clause keyword.
+- Put a subscript that starts its own record under the first character of the
+  identifier it belongs to.
+- When `AND` and `OR` start their own records in an `IF`, `EVALUATE`, `WHEN`,
+  or `UNTIL` condition, end them in one column and start every condition in
+  the next column but one. Align the comparison operators when that fits in
+  Area B. A condition written on one record stays on one record.
 - Indent `IF`/`ELSE`, inline `PERFORM`, and `EVALUATE` or `SEARCH` with `WHEN`
   branches by three spaces per level. For an indivisible clause, use the
   deepest whole indent that fits. Report an error if it cannot fit in Area B.

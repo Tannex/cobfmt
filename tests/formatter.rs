@@ -39,10 +39,10 @@ fn aligns_numbered_and_unnumbered_statements_in_area_b() {
             "000400     SET ready TO TRUE\n\n\n000500     END-IF"
         ),
         concat!(
-            "000100     IF active\n\n",
+            "000100     IF active\n\n\n",
             "000200        MOVE id            IN src TO id            OF dest\n",
             "              move customer-name of src to customer-name in dest\n",
-            "000400        SET  ready                TO TRUE\n\n000500     END-IF"
+            "000400        SET  ready                TO TRUE\n\n\n000500     END-IF"
         ),
     );
 }
@@ -53,7 +53,7 @@ fn preserves_comment_debug_and_page_eject_cards() {
     let comments = "000300* > a comment '   \n000400/  page   \r\n      D     DISPLAY x  \r\n";
     layout(
         &format!("{opener}           MOVE x TO y\r\n{comments}           END-IF"),
-        &format!("{opener}\r\n              MOVE x TO y\r\n\r\n{comments}           END-IF"),
+        &format!("{opener}              MOVE x TO y\r\n{comments}           END-IF"),
     );
 }
 
@@ -72,16 +72,86 @@ fn keeps_verbose_literal_continuation_chains_including_intervening_comments() {
 
 #[test]
 fn wraps_immediately_before_a_keyword_using_column_72() {
-    for n in [60, 61, 62] {
-        let prefix = format!("MOVE {}", "x".repeat(n - "MOVE  TO y".len()));
-        let input = area_b(&format!("{prefix}\nTO y"));
-        let expected = if n <= 61 {
-            area_b(&format!("{prefix} TO y"))
-        } else {
-            area_b(&format!("{prefix}\n  TO y"))
-        };
-        layout(&input, &expected);
+    // Inside the IF, a statement of 58 columns ends in column 72.
+    for n in [57, 58, 59] {
+        for (verb, keyword, hang) in [("DISPLAY", "UPON", "      "), ("MOVE", "TO", "     ")] {
+            let prefix = format!("{verb} {}", "x".repeat(n - verb.len() - keyword.len() - 4));
+            let input = area_b(&format!("IF ok\n{prefix} {keyword} y\nEND-IF."));
+            let expected = if n <= 58 {
+                area_b(&format!("IF ok\n   {prefix} {keyword} y\nEND-IF."))
+            } else {
+                area_b(&format!("IF ok\n   {prefix}\n{hang}{keyword} y\nEND-IF."))
+            };
+            layout(&input, &expected);
+        }
     }
+}
+
+#[test]
+fn keeps_a_statement_split_before_a_keyword_on_separate_records() {
+    layout(
+        &area_b("MOVE a\nTO b\nDISPLAY c\nUPON d\nMOVE e TO f"),
+        &area_b("MOVE a\n  TO b\nDISPLAY c\n   UPON d\nMOVE e TO f"),
+    );
+}
+
+#[test]
+fn puts_a_subscript_record_under_the_identifier_it_belongs_to() {
+    layout(
+        &area_b("MOVE amt TO total IN entry\n    (idx)\nMOVE a TO b"),
+        &area_b("MOVE amt TO total IN entry\n            (idx)\nMOVE a   TO b"),
+    );
+}
+
+#[test]
+fn lays_out_an_assignment_group_as_a_table_with_blank_cells() {
+    layout(
+        &area_b("MOVE long-source-name TO x\nMOVE a IN grp TO b IN out\nSET done TO TRUE"),
+        &area_b(concat!(
+            "MOVE long-source-name        TO x\n",
+            "MOVE a                IN grp TO b    IN out\n",
+            "SET  done                    TO TRUE"
+        )),
+    );
+}
+
+#[test]
+fn a_row_too_wide_for_the_table_continues_at_to_and_the_rest_stay_aligned() {
+    // The first row fits in column 12 but not inside the IF.
+    let source = "s".repeat(22);
+    let target = "t".repeat(22);
+    layout(
+        &area_b(&format!(
+            "IF ok\nMOVE {source} IN grp TO {target}\nMOVE a TO b\nSET done TO TRUE\nEND-IF."
+        )),
+        &area_b(&format!(
+            "IF ok\n   MOVE {source} IN grp\n     TO {target}\n   MOVE a    TO b\n   SET  done TO TRUE\nEND-IF."
+        )),
+    );
+}
+
+#[test]
+fn aligns_conditions_and_operators_when_and_or_start_their_own_records() {
+    layout(
+        &area_b(concat!(
+            "IF WS-TYPE = 'A'\nAND WS-STATUS-CODE = '00'\nOR WS-OVERRIDE-FLAG = 'Y'\n",
+            "PERFORM 1000-WRITE\nEND-IF\n",
+            "EVALUATE WS-TYPE = 'A'\nAND WS-STATUS-CODE = '00'\nOR WS-READY\n",
+            "WHEN TRUE\nCONTINUE\nEND-EVALUATE\n",
+            "IF a = 1 AND b = 2\nCONTINUE\nEND-IF."
+        )),
+        &area_b(concat!(
+            "IF     WS-TYPE          = 'A'\n",
+            "   AND WS-STATUS-CODE   = '00'\n",
+            "    OR WS-OVERRIDE-FLAG = 'Y'\n",
+            "   PERFORM 1000-WRITE\nEND-IF\n",
+            "EVALUATE WS-TYPE        = 'A'\n",
+            "     AND WS-STATUS-CODE = '00'\n",
+            "      OR WS-READY\n",
+            "   WHEN TRUE\n      CONTINUE\nEND-EVALUATE\n",
+            "IF a = 1 AND b = 2\n   CONTINUE\nEND-IF."
+        )),
+    );
 }
 
 #[test]
@@ -100,17 +170,16 @@ fn retains_metadata_and_record_width_when_wrap_adds_an_unnumbered_card() {
     assert!(output.lines().all(|s| s.len() == 80));
     let lines: Vec<_> = output.lines().collect();
     assert_eq!(lines[0], if_card);
-    assert_eq!(lines[1], " ".repeat(80));
-    assert_eq!(&lines[2][..6], "00A200");
-    assert_eq!(&lines[2][72..], "TO IN   ");
-    assert_eq!(lines[3].trim(), "TO result");
+    assert_eq!(&lines[1][..6], "00A200");
+    assert_eq!(&lines[1][72..], "TO IN   ");
+    assert_eq!(lines[2].trim(), "TO result");
     assert_eq!(
-        lines[2].find("MOVE").unwrap() + 3,
-        lines[3].find("TO result").unwrap() + 1
+        lines[1].find("MOVE").unwrap() + 3,
+        lines[2].find("TO result").unwrap() + 1
     );
-    assert_eq!(&lines[3][..7], "       ");
-    assert_eq!(&lines[3][72..], "        ");
-    assert_eq!(&lines[4][72..], "LASTMOVE");
+    assert_eq!(&lines[2][..7], "       ");
+    assert_eq!(&lines[2][72..], "        ");
+    assert_eq!(&lines[3][72..], "LASTMOVE");
     assert_eq!(lines.last().unwrap(), &end);
     layout(&input, &output);
 }
@@ -137,7 +206,7 @@ fn aligns_to_with_the_actual_move_column_when_either_clause_is_long() {
     ] {
         let input = area_b(&format!("IF ok\nmove {source}\nto {destination}\nEND-IF."));
         let expected = area_b(&format!(
-            "IF ok\n\nmove {source}\n  to {destination}\n\nEND-IF."
+            "IF ok\nmove {source}\n  to {destination}\nEND-IF."
         ));
         layout(&input, &expected);
     }
@@ -201,13 +270,12 @@ fn aligns_across_comments_using_the_printed_move_position() {
 }
 
 #[test]
-fn numbered_blank_cards_survive_group_spacing() {
+fn keeps_blank_cards_as_written_and_adds_none() {
     let numbered = card("000200", ' ', "", "VERSION");
-    let input = format!("000100     DISPLAY x.\n\n{numbered}\n\n000300     MOVE a TO b.");
-    layout(
-        &input,
-        &format!("000100     DISPLAY x.\n{numbered}\n000300     MOVE a TO b."),
+    let input = format!(
+        "000100     DISPLAY x.\n\n{numbered}\n\n000300     MOVE a TO b.\n000400     DISPLAY y."
     );
+    layout(&input, &input);
 }
 
 #[test]
@@ -253,7 +321,7 @@ fn aligns_only_set_to_and_indents_explicit_and_implicit_scopes() {
         "PERFORM setup\nPERFORM UNTIL done\n   IF found\n      EVALUATE tag\n",
         "         WHEN 1\n            DISPLAY tag\n         WHEN OTHER\n            CONTINUE\n",
         "      END-EVALUATE\n   ELSE\n      DISPLAY 'missing'\n   END-IF\nEND-PERFORM.\n",
-        "IF ok\n   IF ready\n      DISPLAY 1.\nSET ix UP BY 1\n\nSET ready TO TRUE\n\nSTOP RUN."
+        "IF ok\n   IF ready\n      DISPLAY 1.\nSET ix UP BY 1\nSET ready TO TRUE\nSTOP RUN."
     );
     let messy = expected
         .lines()
