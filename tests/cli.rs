@@ -64,3 +64,37 @@ fn procedure_copy_replacing_formats_and_checks_without_the_copybook() {
     assert_eq!(run(&["--check"], messy.as_bytes()).status.code(), Some(1));
     assert_eq!(run(&[], messy.as_bytes()).stdout, input.as_bytes());
 }
+
+#[test]
+fn repeated_replace_directives_between_copybooks() {
+    let input = concat!(
+        "           COPY KONM128K.\n",
+        "               REPLACE ==:XXXX:== BY ==FI01==.\n",
+        "           COPY BDSISEQI.\n",
+        "               REPLACE ==:XXXX:== BY ==F001==.\n",
+        "           COPY BDSISEQO.\n",
+        "               REPLACE ==:XXXX:== BY ==F002==.\n",
+        "           COPY BDSISEQO.\n",
+        "               REPLACE OFF.\n",
+        "           GOBACK.\n",
+    );
+    for prefix in [
+        "",
+        "       PROCEDURE DIVISION.\n",
+        "       DATA DIVISION.\n       WORKING-STORAGE SECTION.\n",
+    ] {
+        let body = if prefix.contains("DATA DIVISION") {
+            input.replace(
+                "           GOBACK.",
+                "       PROCEDURE DIVISION.\n           GOBACK.",
+            )
+        } else {
+            input.to_string()
+        };
+        let src = format!("{prefix}{body}");
+        let formatted = run(&[], src.as_bytes());
+        assert!(formatted.status.success());
+        assert_eq!(formatted.stdout, src.as_bytes());
+        assert!(run(&["--check"], src.as_bytes()).status.success());
+    }
+}

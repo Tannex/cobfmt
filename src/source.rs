@@ -254,26 +254,25 @@ fn area_a_header(lexed: &[Token<'_>], area: &str) -> bool {
             ))
 }
 
-struct CopyStatement {
+struct PreprocessorStatement {
+    keyword: &'static str,
     line: usize,
     in_pseudo_text: bool,
 }
 
-// COPY is a preprocessor statement. Its operands and terminating period must
-// not affect the surrounding COBOL scopes. Keep any real code on the same card.
-fn code_outside_copy(
+// Keep COPY and REPLACE records verbatim. Pass only the surrounding COBOL
+// to the layout engine, so periods and keywords inside directives cannot close scopes.
+fn code_outside_preprocessor(
     code: &str,
     lexed: &[Token<'_>],
     line: usize,
-    copy: &mut Option<CopyStatement>,
+    statement: &mut Option<PreprocessorStatement>,
 ) -> Option<String> {
-    if copy.is_none() && !lexed.iter().any(|t| t.text.eq_ignore_ascii_case("COPY")) {
-        return None;
-    }
+    let mut found = statement.is_some();
     let mut outside = String::new();
     let mut from = 0;
-    for t in lexed {
-        if let Some(state) = copy {
+    for (index, t) in lexed.iter().enumerate() {
+        if let Some(state) = statement {
             match t.text {
                 "==" => state.in_pseudo_text = !state.in_pseudo_text,
                 "." if !state.in_pseudo_text => {
@@ -282,22 +281,36 @@ fn code_outside_copy(
                         || tail.starts_with(char::is_whitespace)
                         || tail.starts_with("*>")
                     {
-                        *copy = None;
+                        *statement = None;
                         from = t.start + 1;
                     }
                 }
                 _ => {}
             }
-        } else if t.text.eq_ignore_ascii_case("COPY") {
+        } else {
+            let keyword = if t.text.eq_ignore_ascii_case("COPY") {
+                "COPY"
+            } else if t.text.eq_ignore_ascii_case("REPLACE")
+                && (index == 0 || lexed[index - 1].text == ".")
+            {
+                "REPLACE"
+            } else {
+                continue;
+            };
+            found = true;
             outside.push_str(&code[from..t.start]);
             outside.push(' ');
-            *copy = Some(CopyStatement {
+            *statement = Some(PreprocessorStatement {
+                keyword,
                 line,
                 in_pseudo_text: false,
             });
         }
     }
-    if copy.is_none() {
+    if !found {
+        return None;
+    }
+    if statement.is_none() {
         outside.push_str(&code[from..]);
     }
     Some(outside.trim().to_owned())
@@ -307,7 +320,7 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
     let mut result: Vec<Record<'_>> = Vec::new();
     let mut procedure = true; // Also accept fixed-format procedure snippets.
     let mut embedded = false;
-    let mut copy = None;
+    let mut preprocessor = None;
     let mut first_code = true;
     for card in cards {
         let mut code = card.area.trim();
@@ -317,7 +330,7 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             code = "";
         } else if card.blank() {
             action = Action::Blank;
-        } else if card.indicator != ' ' && !(card.indicator == '-' && copy.is_some()) {
+        } else if card.indicator != ' ' && !(card.indicator == '-' && preprocessor.is_some()) {
             let end_sentence = card.indicator == '-'
                 && tokens(code)
                     .into_iter()
@@ -334,9 +347,10 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             count = lexed.len();
             let first = lexed.first().map_or("", |t| t.text);
             let second = lexed.get(1).map_or("", |t| t.text);
-            if (copy.is_some()
+            if (preprocessor.is_some()
                 || (!embedded && !first.eq_ignore_ascii_case("EXEC") && !code.starts_with(">>")))
-                && let Some(outside) = code_outside_copy(code, &lexed, card.number, &mut copy)
+                && let Some(outside) =
+                    code_outside_preprocessor(code, &lexed, card.number, &mut preprocessor)
             {
                 result.push(Record {
                     anchors: vec![(0, card)],
@@ -453,8 +467,11 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             token_count: count,
         });
     }
-    if let Some(state) = copy {
-        return Err(format!("line {}: unterminated COPY statement", state.line));
+    if let Some(state) = preprocessor {
+        return Err(format!(
+            "line {}: unterminated {} statement",
+            state.line, state.keyword
+        ));
     }
     Ok(result)
 }

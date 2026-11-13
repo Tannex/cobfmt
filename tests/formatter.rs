@@ -303,6 +303,39 @@ fn preserves_copy_with_surrounding_code_on_the_same_record() {
 }
 
 #[test]
+fn preserves_multiline_replace_then_formats_following_statements() {
+    let directive = [
+        card("000100", ' ', "      rEpLaCe ==:XXXX:== BY ==", "TEST0001"),
+        card("000200", '*', " Comment with == and a period.", "TEST0002"),
+        card(
+            "000300",
+            ' ',
+            "          'a.==b'==  *> keep this comment",
+            "TEST0003",
+        ),
+        card("000400", ' ', "          ==END-IF.== BY ====.", "TEST0004"),
+        card("000500", ' ', "      replace off.", "TEST0005"),
+    ]
+    .join("\r\n");
+    let src = format!(
+        "           DISPLAY 'REPLACE'.\r\n{directive}\r\n             IF ok\r\n           DISPLAY x\r\n           END-IF."
+    );
+    let expected = src
+        .replace("             IF ok", "           IF ok")
+        .replace("           DISPLAY x", "              DISPLAY x");
+    layout(&src, &expected);
+}
+
+#[test]
+fn reports_the_start_of_an_unterminated_replace() {
+    let input = area_b("COPY prefix.\nREPLACE ==:XXXX:== BY ==open.\n");
+    assert_eq!(
+        format_source(&input).unwrap_err(),
+        "line 2: unterminated REPLACE statement"
+    );
+}
+
+#[test]
 fn preserves_empty_inputs_and_mixed_comment_endings() {
     for raw in [
         "",
