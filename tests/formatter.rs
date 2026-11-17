@@ -455,3 +455,160 @@ fn a_period_on_a_literal_continuation_ends_the_enclosing_sentence() {
     );
     layout(program, program);
 }
+
+#[test]
+fn a_continuation_that_starts_with_an_operand_goes_under_the_list_it_continues() {
+    let input = [
+        "MOVE SPACES TO WS-MESSAGE",
+        "ERRMSGO OF COSGN0AO",
+        "INITIALIZE CC-WORK-AREA",
+        "WS-MISC-STORAGE",
+        "DISPLAY 'Key: ' WS-KEY",
+        "' not found'",
+        "COMPUTE WS-BAL = WS-CREDIT",
+        "- WS-DEBIT",
+        "+ WS-AMT",
+        "COMPUTE WS-LIMIT =",
+        "FUNCTION NUMVAL-C(WS-TEXT)",
+        "MOVE FUNCTION UPPER-CASE(WS-IN) TO",
+        "WS-USER-ID",
+        "CDEMO-USER-ID",
+        "MOVE WS-AREA(LENGTH OF WS-HEAD + 1:",
+        "LENGTH OF WS-BODY) TO WS-BODY",
+        "IF WS-A OR",
+        "WS-B OR",
+        "(WS-C AND WS-D)",
+        "STRING WS-FIRST DELIMITED BY SPACE",
+        "WS-LAST DELIMITED BY SIZE",
+        "INTO WS-FULL",
+        "END-IF",
+        "MOVE WS-A TO WS-B",
+        "WS-C",
+        "PERFORM 100-INIT",
+        "THRU 100-EXIT.",
+    ];
+    let expected = [
+        "MOVE SPACES TO WS-MESSAGE",
+        "               ERRMSGO OF COSGN0AO",
+        "INITIALIZE CC-WORK-AREA",
+        "           WS-MISC-STORAGE",
+        "DISPLAY 'Key: ' WS-KEY",
+        "        ' not found'",
+        "COMPUTE WS-BAL = WS-CREDIT",
+        "               - WS-DEBIT",
+        "               + WS-AMT",
+        "COMPUTE WS-LIMIT =",
+        "   FUNCTION NUMVAL-C(WS-TEXT)",
+        "MOVE FUNCTION UPPER-CASE(WS-IN) TO",
+        "   WS-USER-ID",
+        "   CDEMO-USER-ID",
+        "MOVE WS-AREA(LENGTH OF WS-HEAD + 1:",
+        "             LENGTH OF WS-BODY) TO WS-BODY",
+        "IF WS-A OR",
+        "   WS-B OR",
+        "   (WS-C AND WS-D)",
+        "   STRING WS-FIRST DELIMITED BY SPACE",
+        "          WS-LAST DELIMITED BY SIZE",
+        "      INTO WS-FULL",
+        "END-IF",
+        "MOVE WS-A TO WS-B",
+        "             WS-C",
+        "PERFORM 100-INIT",
+        "   THRU 100-EXIT.",
+    ];
+    layout(&area_b(&input.join("\n")), &area_b(&expected.join("\n")));
+}
+
+#[test]
+fn conditional_phrases_indent_under_their_statement_and_their_bodies_under_them() {
+    let input = [
+        "IF WS-OPEN",
+        "READ IN-FILE INTO WS-REC",
+        "AT END",
+        "SET WS-EOF TO TRUE",
+        "NOT AT END",
+        "ADD 1 TO WS-COUNT",
+        "ON SIZE ERROR",
+        "DISPLAY 'OVERFLOW'",
+        "END-ADD",
+        "READ XREF-FILE",
+        "END-READ",
+        "MOVE WS-REC TO WS-OUT",
+        "END-READ",
+        "WRITE OUT-REC",
+        "INVALID KEY",
+        "MOVE 8 TO WS-RC",
+        "ELSE",
+        "SEARCH WS-ENTRY",
+        "AT END",
+        "MOVE 'N' TO WS-FOUND",
+        "WHEN WS-KEY (IDX) = WS-TARGET",
+        "CALL 'LOOKUP' USING WS-KEY",
+        "ON EXCEPTION",
+        "MOVE 'E' TO WS-FOUND",
+        "NOT ON EXCEPTION",
+        "MOVE 'Y' TO WS-FOUND",
+        "END-SEARCH",
+        "END-IF",
+        "READ IN-FILE",
+        "AT END MOVE 'Y' TO WS-EOF",
+        "END-READ",
+        "DELETE IN-FILE",
+        "INVALID KEY",
+        "DISPLAY 'GONE'.",
+        "GOBACK.",
+    ];
+    let expected = [
+        "IF WS-OPEN",
+        "   READ IN-FILE INTO WS-REC",
+        "      AT END",
+        "         SET WS-EOF TO TRUE",
+        "      NOT AT END",
+        "         ADD 1 TO WS-COUNT",
+        "            ON SIZE ERROR",
+        "               DISPLAY 'OVERFLOW'",
+        "         END-ADD",
+        "         READ XREF-FILE",
+        "         END-READ",
+        "         MOVE WS-REC TO WS-OUT",
+        "   END-READ",
+        "   WRITE OUT-REC",
+        "      INVALID KEY",
+        "         MOVE 8 TO WS-RC",
+        "ELSE",
+        "   SEARCH WS-ENTRY",
+        "      AT END",
+        "         MOVE 'N' TO WS-FOUND",
+        "      WHEN WS-KEY (IDX) = WS-TARGET",
+        "         CALL 'LOOKUP' USING WS-KEY",
+        "            ON EXCEPTION",
+        "               MOVE 'E' TO WS-FOUND",
+        "            NOT ON EXCEPTION",
+        "               MOVE 'Y' TO WS-FOUND",
+        "   END-SEARCH",
+        "END-IF",
+        "READ IN-FILE",
+        "   AT END MOVE 'Y' TO WS-EOF",
+        "END-READ",
+        "DELETE IN-FILE",
+        "   INVALID KEY",
+        "      DISPLAY 'GONE'.",
+        "GOBACK.",
+    ];
+    layout(&area_b(&input.join("\n")), &area_b(&expected.join("\n")));
+}
+
+#[test]
+fn an_operand_continuation_after_a_comment_hangs_under_its_statement() {
+    let input = format!(
+        "{}\n      * note\n{}",
+        area_b("MOVE WS-A TO WS-B"),
+        area_b("WS-C\nGOBACK.")
+    );
+    let expected = format!(
+        "{}\n      * note\n{}",
+        area_b("MOVE WS-A TO WS-B"),
+        area_b("   WS-C\nGOBACK.")
+    );
+    layout(&input, &expected);
+}

@@ -79,7 +79,118 @@ pub(crate) fn is_clause(word: &str) -> bool {
             | "UPON"
             | "DELIMITED"
             | "ON"
+            | "THRU"
+            | "THROUGH"
     )
+}
+
+/// The kind of conditional phrase that starts these tokens, such as `AT END`,
+/// `NOT INVALID KEY`, or `ON SIZE ERROR`.
+pub(crate) fn phrase(lexed: &[Token<'_>]) -> Option<&'static str> {
+    let word = |i: usize| {
+        lexed
+            .get(i)
+            .filter(|t| t.kind == TokenKind::Word)
+            .map_or(String::new(), |t| t.text.to_ascii_uppercase())
+    };
+    let mut at = 0;
+    if word(at) == "NOT" {
+        at += 1;
+    }
+    if matches!(word(at).as_str(), "ON" | "AT") {
+        at += 1;
+    }
+    match word(at).as_str() {
+        // A bare END could be a header or an operand.
+        "END" if at > 0 => Some("END"),
+        "END-OF-PAGE" | "EOP" => Some("EOP"),
+        // DELIMITED BY SIZE can put SIZE first on a record.
+        "SIZE" if word(at + 1) == "ERROR" => Some("SIZE"),
+        "EXCEPTION" => Some("EXCEPTION"),
+        "OVERFLOW" => Some("OVERFLOW"),
+        "INVALID" => Some("INVALID"),
+        _ => None,
+    }
+}
+
+/// Whether a record starts a statement, a scope keyword, or a conditional
+/// phrase. Any other record continues the statement before it.
+pub(crate) fn starts_statement(lexed: &[Token<'_>]) -> bool {
+    let Some(first) = lexed.first() else {
+        return true;
+    };
+    if first.text == "." || phrase(lexed).is_some() {
+        return true;
+    }
+    if first.kind != TokenKind::Word {
+        return false;
+    }
+    let head = first.text.to_ascii_uppercase();
+    let second = lexed.get(1).map_or("", |t| t.text);
+    if head == "NEXT" {
+        return second.eq_ignore_ascii_case("SENTENCE");
+    }
+    head.starts_with("END-")
+        || matches!(
+            head.as_str(),
+            "ACCEPT"
+                | "ADD"
+                | "ALLOCATE"
+                | "ALTER"
+                | "CALL"
+                | "CANCEL"
+                | "CLOSE"
+                | "COMMIT"
+                | "COMPUTE"
+                | "CONTINUE"
+                | "DELETE"
+                | "DISPLAY"
+                | "DIVIDE"
+                | "EJECT"
+                | "ELSE"
+                | "ENTRY"
+                | "EVALUATE"
+                | "EXEC"
+                | "EXIT"
+                | "FREE"
+                | "GENERATE"
+                | "GO"
+                | "GOBACK"
+                | "IF"
+                | "INITIALIZE"
+                | "INITIATE"
+                | "INSPECT"
+                | "INVOKE"
+                | "JSON"
+                | "MERGE"
+                | "MOVE"
+                | "MULTIPLY"
+                | "OPEN"
+                | "PERFORM"
+                | "READ"
+                | "RELEASE"
+                | "RETURN"
+                | "REWRITE"
+                | "ROLLBACK"
+                | "SEARCH"
+                | "SERVICE"
+                | "SET"
+                | "SKIP1"
+                | "SKIP2"
+                | "SKIP3"
+                | "SORT"
+                | "START"
+                | "STOP"
+                | "STRING"
+                | "SUBTRACT"
+                | "TERMINATE"
+                | "TITLE"
+                | "UNSTRING"
+                | "USE"
+                | "WHEN"
+                | "WRITE"
+                | "XML"
+        )
 }
 
 fn physical_lines(mut source: &str) -> impl Iterator<Item = (&str, &str)> {
@@ -191,13 +302,14 @@ pub(crate) enum Action {
 }
 
 pub(crate) struct Record<'a> {
-    // A continuation keeps its original record boundary, before a clause keyword
-    // or a subscript. Indices count COBOL tokens, so alignment spaces cannot
-    // move a boundary.
+    // A continuation keeps its original record boundary. Indices count COBOL
+    // tokens, so alignment spaces cannot move a boundary.
     pub anchors: Vec<(usize, Card<'a>)>,
     pub code: Cow<'a, str>,
     pub ending: &'a str,
     pub action: Action,
+    /// Continues a statement that a comment or a kept record separates it from.
+    pub orphan: bool,
     token_count: usize,
 }
 
@@ -319,10 +431,12 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
     let mut embedded = false;
     let mut preprocessor = None;
     let mut first_code = true;
+    let mut open_sentence = false;
     for card in cards {
         let mut code = card.area.trim();
         let mut action = Action::Keep;
         let mut count = 0;
+        let mut orphan = false;
         if card.control {
             code = "";
         } else if card.blank() {
@@ -354,6 +468,7 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
                     code: Cow::Owned(outside),
                     ending: card.ending,
                     action: Action::Keep,
+                    orphan: false,
                     token_count: 0,
                 });
                 continue;
@@ -440,18 +555,29 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
                     code = ".";
                 }
             }
-            if action == Action::Format
-                && (is_clause(first) || first == "(")
-                && let Some(previous) = result.last_mut()
-                && previous.action == Action::Format
-                && !previous.code.ends_with('.')
-            {
-                previous.anchors.push((previous.token_count, card));
-                previous.code.to_mut().push(' ');
-                previous.code.to_mut().push_str(code);
-                previous.token_count += count;
-                previous.ending = card.ending;
-                continue;
+            if action == Action::Format && !starts_statement(&lexed) {
+                if let Some(previous) = result.last_mut()
+                    && previous.action == Action::Format
+                    && !previous.code.ends_with('.')
+                {
+                    previous.anchors.push((previous.token_count, card));
+                    previous.code.to_mut().push(' ');
+                    previous.code.to_mut().push_str(code);
+                    previous.token_count += count;
+                    previous.ending = card.ending;
+                    open_sentence = !code.ends_with('.');
+                    continue;
+                }
+                orphan = open_sentence;
+            }
+            if action == Action::Format {
+                open_sentence = !code.ends_with('.');
+            } else if !comment && !card.protected {
+                // A header, a directive, or the end of an embedded block.
+                open_sentence &= embedded || code != ".";
+                if code.is_empty() && !embedded && directive.is_none() {
+                    open_sentence = false;
+                }
             }
         }
         result.push(Record {
@@ -459,6 +585,7 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             code: Cow::Borrowed(code),
             ending: card.ending,
             action,
+            orphan,
             token_count: count,
         });
     }
