@@ -68,12 +68,21 @@ Formatted output:
   clause keyword.
 - Put a subscript that starts its own record under the first character of the
   identifier it belongs to.
+- A record that starts with an operand continues the statement before it. Put
+  it under the first operand of the list it continues: the one after the
+  innermost open parenthesis, or else after the nearest `TO`, `USING`,
+  `GIVING`, `INTO`, `FROM`, `UNTIL`, or the verb. An arithmetic operator goes
+  under the `=` of its expression. When that operand is not on an earlier
+  record, or a comment separates the two, hang the record three spaces.
 - When `AND` and `OR` start their own records in an `IF`, `EVALUATE`, `WHEN`,
   or `UNTIL` condition, end them in one column and start every condition in
   the next column but one. Align the comparison operators when that fits in
   Area B. A condition written on one record stays on one record.
 - Indent `IF`/`ELSE`, inline `PERFORM`, and `EVALUATE` or `SEARCH` with `WHEN`
-  branches by three spaces per level. For an indivisible clause, use the
+  branches by three spaces per level. A conditional phrase on its own record,
+  such as `AT END`, `NOT INVALID KEY`, or `ON SIZE ERROR`, sits one level under
+  its statement and its statements one level under the phrase. `AT END` of a
+  `SEARCH` sits with the `WHEN` branches. For an indivisible clause, use the
   deepest whole indent that fits. Report an error if it cannot fit in Area B.
 - Preserve entire comment records byte for byte, including `*` and `/` in
   column 7 and floating `*>` comments. Preserve the source record and all

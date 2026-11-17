@@ -1,57 +1,163 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::source::{Action, Record, TokenKind, is_clause, tokens};
+use crate::source::{Action, Record, TokenKind, is_clause, phrase, tokens};
 
 const INDENT: usize = 3;
 const AREA_B_WIDTH: usize = 72 - 11;
 const MOVE_TO_OFFSET: usize = "MOVE".len() - "TO".len();
 
+const PHRASE: &str = "PHRASE";
+
+/// A statement that can carry conditional phrases and an explicit terminator.
+fn phrase_verb(word: &str) -> Option<&'static str> {
+    const VERBS: [&str; 20] = [
+        "READ", "RETURN", "WRITE", "REWRITE", "DELETE", "START", "ADD", "SUBTRACT", "MULTIPLY",
+        "DIVIDE", "COMPUTE", "CALL", "ACCEPT", "DISPLAY", "INVOKE", "XML", "JSON", "STRING",
+        "UNSTRING", "RECEIVE",
+    ];
+    VERBS
+        .into_iter()
+        .find(|verb| word.eq_ignore_ascii_case(verb))
+}
+
+/// Whether a phrase of this kind can belong to the statement.
+fn takes_phrase(verb: &str, kind: &str) -> bool {
+    match kind {
+        "END" => matches!(verb, "READ" | "RETURN"),
+        "EOP" => verb == "WRITE",
+        "INVALID" => matches!(verb, "READ" | "WRITE" | "REWRITE" | "DELETE" | "START"),
+        "SIZE" => matches!(verb, "ADD" | "SUBTRACT" | "MULTIPLY" | "DIVIDE" | "COMPUTE"),
+        "EXCEPTION" => matches!(
+            verb,
+            "CALL" | "ACCEPT" | "DISPLAY" | "INVOKE" | "XML" | "JSON" | "RECEIVE"
+        ),
+        "OVERFLOW" => matches!(verb, "STRING" | "UNSTRING" | "CALL"),
+        _ => false,
+    }
+}
+
+/// Open scopes, outermost first. A statement with conditional phrases is a
+/// scope named for its verb, and each phrase is a `PHRASE` scope inside it.
 #[derive(Default)]
-pub(crate) struct Scopes(Vec<&'static str>);
+pub(crate) struct Scopes {
+    open: Vec<&'static str>,
+    /// The verb of the previous record, while it may still take a phrase.
+    pending: Option<&'static str>,
+}
 
 impl Scopes {
     fn close(&mut self, terminator: &str) {
-        if let Some(name) = terminator.strip_prefix("END-")
-            && let Some(position) = self.0.iter().rposition(|&scope| scope == name)
-        {
-            self.0.truncate(position);
+        let Some(name) = terminator.strip_prefix("END-") else {
+            return;
+        };
+        // The terminator of a statement without phrases closes no scope.
+        if self.pending.take().is_some_and(|verb| verb == name) {
+            return;
         }
+        if let Some(position) = self.open.iter().rposition(|&scope| scope == name) {
+            self.open.truncate(position);
+        }
+    }
+
+    /// End the statements that a scope keyword terminates implicitly.
+    fn end_statements(&mut self) {
+        while self
+            .open
+            .last()
+            .is_some_and(|&scope| scope == PHRASE || phrase_verb(scope).is_some())
+        {
+            self.open.pop();
+        }
+    }
+
+    /// Open a conditional phrase and return the depth of its record.
+    fn phrase(&mut self, kind: &'static str) -> usize {
+        // The record before a phrase is its statement, when it can take one.
+        let pending = self.pending.take().filter(|verb| takes_phrase(verb, kind));
+        if kind == "END" && pending.is_none() {
+            // AT END of a SEARCH sits with the WHEN branches.
+            let mut inner = self.open.iter().rev();
+            let inner = inner.find(|&&scope| scope != PHRASE && phrase_verb(scope).is_none());
+            if inner.is_some_and(|&scope| scope == "SEARCH" || scope == "WHEN") {
+                self.end_statements();
+                if self.open.last() == Some(&"WHEN") {
+                    self.open.pop();
+                }
+                self.open.push("WHEN");
+                return self.open.len() - 1;
+            }
+        }
+        match pending {
+            Some(verb) => self.open.push(verb),
+            None => loop {
+                match self.open.last() {
+                    Some(&scope) if scope == PHRASE => {
+                        self.open.pop();
+                    }
+                    Some(&verb) if phrase_verb(verb).is_some() => {
+                        if takes_phrase(verb, kind) {
+                            break;
+                        }
+                        self.open.pop();
+                    }
+                    _ => {
+                        // The statement is out of sight, as in a snippet.
+                        self.open.push(PHRASE);
+                        return self.open.len() - 1;
+                    }
+                }
+            },
+        }
+        self.open.push(PHRASE);
+        self.open.len() - 1
     }
 
     pub fn indent(&mut self, code: &str) -> usize {
         let lexed = tokens(code);
         let Some(first) = lexed.first() else {
-            return self.0.len();
+            return self.open.len();
         };
         let head = first.text.to_ascii_uppercase();
         self.close(&head);
-        if head == "WHEN" && self.0.last() == Some(&"WHEN") {
-            self.0.pop();
-        }
-        let mut depth = self.0.len();
-        let second = lexed.get(1).map_or("", |t| t.text).to_ascii_uppercase();
-        match head.as_str() {
-            "IF" => self.0.push("IF"),
-            "ELSE" if self.0.last() == Some(&"IF") => {
-                depth -= 1;
-                if second == "IF" {
-                    self.0.push("IF");
+        let mut depth;
+        if let Some(kind) = phrase(&lexed) {
+            depth = self.phrase(kind);
+        } else {
+            self.pending = phrase_verb(&head);
+            if head == "WHEN" {
+                self.end_statements();
+                if self.open.last() == Some(&"WHEN") {
+                    self.open.pop();
                 }
             }
-            "EVALUATE" => self.0.push("EVALUATE"),
-            "SEARCH" => self.0.push("SEARCH"),
-            "WHEN" => self.0.push("WHEN"),
-            "PERFORM"
-                if matches!(
-                    second.as_str(),
-                    "" | "UNTIL" | "VARYING" | "WITH" | "FOREVER"
-                ) || lexed
-                    .get(2)
-                    .is_some_and(|t| t.text.eq_ignore_ascii_case("TIMES")) =>
-            {
-                self.0.push("PERFORM");
+            if head == "ELSE" && self.open.contains(&"IF") {
+                self.end_statements();
             }
-            _ => {}
+            depth = self.open.len();
+            let second = lexed.get(1).map_or("", |t| t.text).to_ascii_uppercase();
+            match head.as_str() {
+                "IF" => self.open.push("IF"),
+                "ELSE" if self.open.last() == Some(&"IF") => {
+                    depth -= 1;
+                    if second == "IF" {
+                        self.open.push("IF");
+                    }
+                }
+                "EVALUATE" => self.open.push("EVALUATE"),
+                "SEARCH" => self.open.push("SEARCH"),
+                "WHEN" => self.open.push("WHEN"),
+                "PERFORM"
+                    if matches!(
+                        second.as_str(),
+                        "" | "UNTIL" | "VARYING" | "WITH" | "FOREVER"
+                    ) || lexed
+                        .get(2)
+                        .is_some_and(|t| t.text.eq_ignore_ascii_case("TIMES")) =>
+                {
+                    self.open.push("PERFORM");
+                }
+                _ => {}
+            }
         }
         for token in &lexed[1..] {
             if token.kind == TokenKind::Word {
@@ -59,7 +165,8 @@ impl Scopes {
             }
         }
         if lexed.last().is_some_and(|t| t.text == ".") {
-            self.0.clear();
+            self.open.clear();
+            self.pending = None;
         }
         depth
     }
@@ -70,12 +177,22 @@ pub(crate) enum Column {
     Verb,
     Source(usize),
     Destination(usize),
+    /// Operands on continuation records after the first target.
+    Tail,
 }
 
 pub(crate) type Cells = BTreeMap<Column, String>;
 
-pub(crate) fn assignment(code: &str) -> Option<Cells> {
+/// Split a MOVE or SET … TO into table cells. `anchors` holds the token that
+/// starts each record of the statement.
+pub(crate) fn assignment(code: &str, anchors: &[usize]) -> Option<Cells> {
     let lexed = tokens(code);
+    // The table ends where a continuation record starts with an operand.
+    let tail = anchors
+        .iter()
+        .filter_map(|&token| lexed.get(token))
+        .find(|t| t.start > 0 && !is_clause(t.text) && t.text != "(")
+        .map_or(code.len(), |t| t.start);
     let verb = lexed.first()?.text;
     if !(verb.eq_ignore_ascii_case("MOVE") || verb.eq_ignore_ascii_case("SET")) {
         return None;
@@ -83,7 +200,7 @@ pub(crate) fn assignment(code: &str) -> Option<Cells> {
     let mut starts = vec![(Column::Verb, 0), (Column::Source(0), verb.len())];
     let mut destination = false;
     let mut qualifier = 0;
-    for token in &lexed[1..] {
+    for token in lexed[1..].iter().take_while(|t| t.start < tail) {
         if token.text.eq_ignore_ascii_case("TO") {
             if destination {
                 return None;
@@ -105,8 +222,11 @@ pub(crate) fn assignment(code: &str) -> Option<Cells> {
     if !destination {
         return None;
     }
-    let ends = starts.iter().skip(1).map(|&(_, i)| i).chain([code.len()]);
+    let ends = starts.iter().skip(1).map(|&(_, i)| i).chain([tail]);
     let mut cells = Cells::new();
+    if tail < code.len() {
+        cells.insert(Column::Tail, code[tail..].trim().to_owned());
+    }
     for (&(column, start), end) in starts.iter().zip(ends) {
         let text = code[start..end].trim();
         // Canonicalize the gap after a column keyword while keeping its operand intact.
@@ -165,7 +285,7 @@ pub(crate) fn align(group: &[&Cells], split: &[bool]) -> Vec<String> {
     }
     let broken = pick(true);
     let rows: Vec<_> = broken.iter().map(|&i| group[i]).collect();
-    let destination = |column: &Column| matches!(column, Column::Destination(_));
+    let destination = |column: &Column| matches!(column, Column::Destination(_) | Column::Tail);
     let sources = tabulate(&rows, verb, |column| !destination(column));
     let destinations = tabulate(&rows, verb, destination);
     for ((&i, source), target) in broken.iter().zip(sources).zip(destinations) {
@@ -276,6 +396,87 @@ pub(crate) fn move_to_indent(
         *pending = None;
     }
     Ok(indent)
+}
+
+/// Whether the parenthesis at `token` subscripts the identifier before it,
+/// instead of opening a parenthesized condition or expression.
+pub(crate) fn subscript(code: &str, token: usize) -> bool {
+    let lexed = tokens(code);
+    token
+        .checked_sub(1)
+        .and_then(|i| lexed.get(i))
+        .is_some_and(|t| {
+            t.kind == TokenKind::Word
+                && !is_clause(t.text)
+                && !["IF", "NOT", "WHEN", "EVALUATE", "ALSO"]
+                    .iter()
+                    .any(|k| t.text.eq_ignore_ascii_case(k))
+        })
+}
+
+/// Column for a continuation record that starts with an operand. It goes
+/// under the first operand of the list it continues: after the innermost open
+/// parenthesis, or else after the nearest list keyword such as TO or the verb. An
+/// arithmetic operator goes under the `=` of its expression. `None` when that
+/// operand is not on an earlier record.
+pub(crate) fn operand_column(
+    code: &str,
+    token: usize,
+    positions: &[(usize, usize)],
+) -> Option<usize> {
+    let lexed = tokens(code);
+    let first = lexed.get(token)?;
+    let column_of = |target: usize| {
+        let at = lexed[target].start;
+        let &(start, column) = positions.iter().rev().find(|&&(start, _)| start <= at)?;
+        Some(column + code[start..at].chars().count())
+    };
+    if matches!(first.text, "+" | "-" | "*" | "/")
+        && let Some(equals) = lexed[..token].iter().rposition(|t| t.text == "=")
+    {
+        return column_of(equals);
+    }
+    let mut open = Vec::new();
+    for (i, t) in lexed[..token].iter().enumerate() {
+        match t.text {
+            "(" => open.push(i),
+            ")" => {
+                open.pop();
+            }
+            _ => {}
+        }
+    }
+    if let Some(&paren) = open.last()
+        && paren + 1 < token
+    {
+        return column_of(paren + 1);
+    }
+    let compute = lexed[0].text.eq_ignore_ascii_case("COMPUTE");
+    // Keywords that introduce a list of operands.
+    let lists = [
+        "IF",
+        "TO",
+        "USING",
+        "GIVING",
+        "INTO",
+        "FROM",
+        "RETURNING",
+        "UNTIL",
+        "VARYING",
+    ];
+    let anchor = |i: usize| {
+        let text = lexed[i].text;
+        i == 0
+            || (compute && text == "=")
+            || (lexed[i].kind == TokenKind::Word
+                && lists.iter().any(|k| text.eq_ignore_ascii_case(k)))
+    };
+    let keyword = (0..token).rev().find(|&i| anchor(i))?;
+    if keyword + 1 < token {
+        column_of(keyword + 1)
+    } else {
+        None
+    }
 }
 
 /// Column for a subscript on its own record: under the first character of the

@@ -5,9 +5,9 @@ mod source;
 
 use layout::{
     Cells, Scopes, align, assignment, clauses, collapse_gaps, condition, fits, move_to_indent,
-    subscript_column, to_token, width_before, wrap,
+    operand_column, subscript, subscript_column, to_token, width_before, wrap,
 };
-use source::{Action, Card, Record, cards, records};
+use source::{Action, Card, Record, cards, is_clause, records};
 
 struct Row<'a> {
     record: Record<'a>,
@@ -85,6 +85,8 @@ impl Row<'_> {
                 };
                 break conditions.into_iter().map(line).collect::<Vec<_>>();
             }
+            // A continuation cut off from its statement still hangs under it.
+            let depth = self.depth + usize::from(record.orphan);
             let mut lines: Vec<(String, Option<&Card<'_>>)> = Vec::new();
             let mut added = Vec::new();
             let mut positions = Vec::new();
@@ -97,12 +99,19 @@ impl Row<'_> {
                     });
                 let (card_parts, rest) = remaining.split_at(end);
                 remaining = rest;
-                let subscript = card_parts
-                    .first()
-                    .filter(|p| p.first == "(")
-                    .and_then(|p| subscript_column(code, p.token, &positions));
+                // A continuation that starts with an operand goes under the
+                // operand it follows on from.
+                let column = card_parts.first().filter(|_| index > 0).and_then(|p| {
+                    if p.first == "(" && subscript(code, p.token) {
+                        subscript_column(code, p.token, &positions)
+                    } else if is_clause(p.first) {
+                        None
+                    } else {
+                        operand_column(code, p.token, &positions)
+                    }
+                });
                 let number = card.map_or(record.first().number, |c| c.number);
-                let wrapped = wrap(card_parts, self.depth, indent, subscript, &mut positions)
+                let wrapped = wrap(card_parts, depth, indent, column, &mut positions)
                     .map_err(|e| format!("line {number}: {e}"))?;
                 for (i, (token, line)) in wrapped.into_iter().enumerate() {
                     if i > 0 {
@@ -156,7 +165,8 @@ pub fn format_source(source: &str) -> Result<String, String> {
         .map(|record| {
             let depth = scopes.indent(&record.code);
             let cells = if record.action == Action::Format {
-                assignment(&record.code)
+                let anchors: Vec<_> = record.anchors.iter().map(|&(token, _)| token).collect();
+                assignment(&record.code, &anchors)
             } else {
                 None
             };
