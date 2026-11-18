@@ -40,7 +40,7 @@ fn aligns_numbered_and_unnumbered_statements_in_area_b() {
         ),
         concat!(
             "000100     IF active\n\n\n",
-            "000200        MOVE id            IN src TO id            OF dest\n",
+            "000200        MOVE id IN src            TO id OF dest\n",
             "              move customer-name of src to customer-name in dest\n",
             "000400        SET  ready                TO TRUE\n\n\n000500     END-IF"
         ),
@@ -104,13 +104,13 @@ fn puts_a_subscript_record_under_the_identifier_it_belongs_to() {
 }
 
 #[test]
-fn lays_out_an_assignment_group_as_a_table_with_blank_cells() {
+fn lays_out_an_assignment_group_as_a_table_with_qualifiers_inside_cells() {
     layout(
         &area_b("MOVE long-source-name TO x\nMOVE a IN grp TO b IN out\nSET done TO TRUE"),
         &area_b(concat!(
-            "MOVE long-source-name        TO x\n",
-            "MOVE a                IN grp TO b    IN out\n",
-            "SET  done                    TO TRUE"
+            "MOVE long-source-name TO x\n",
+            "MOVE a IN grp         TO b IN out\n",
+            "SET  done             TO TRUE"
         )),
     );
 }
@@ -499,9 +499,9 @@ fn a_continuation_that_starts_with_an_operand_goes_under_the_list_it_continues()
         "               + WS-AMT",
         "COMPUTE WS-LIMIT =",
         "   FUNCTION NUMVAL-C(WS-TEXT)",
-        "MOVE FUNCTION UPPER-CASE(WS-IN) TO",
-        "   WS-USER-ID",
-        "   CDEMO-USER-ID",
+        "MOVE FUNCTION UPPER-CASE(WS-IN)",
+        "  TO WS-USER-ID",
+        "     CDEMO-USER-ID",
         "MOVE WS-AREA(LENGTH OF WS-HEAD + 1:",
         "             LENGTH OF WS-BODY) TO WS-BODY",
         "IF WS-A OR",
@@ -611,4 +611,98 @@ fn an_operand_continuation_after_a_comment_hangs_under_its_statement() {
         area_b("   WS-C\nGOBACK.")
     );
     layout(&input, &expected);
+}
+
+#[test]
+fn a_qualified_name_is_one_cell_of_the_table() {
+    layout(
+        &area_b(concat!(
+            "MOVE TRAN-TYPE-CD   OF TRAN-RECORD TO TRAN-REPORT-TYPE-CD\n",
+            "MOVE TRAN-ID TO TRAN-REPORT-TRANS-ID\n",
+            "MOVE WS-FLAG(IDX)TO TRAN-FLAG  IN TRAN-REPORT\n",
+            "MOVE TRANSACTION-DETAIL-REPORT TO FD-REPTFILE-REC"
+        )),
+        &area_b(concat!(
+            "MOVE TRAN-TYPE-CD OF TRAN-RECORD TO TRAN-REPORT-TYPE-CD\n",
+            "MOVE TRAN-ID                     TO TRAN-REPORT-TRANS-ID\n",
+            "MOVE WS-FLAG(IDX)                TO TRAN-FLAG IN TRAN-REPORT\n",
+            "MOVE TRANSACTION-DETAIL-REPORT   TO FD-REPTFILE-REC"
+        )),
+    );
+}
+
+#[test]
+fn a_row_too_wide_for_the_table_leaves_it_and_the_most_rows_stay() {
+    // The table cannot hold both the long literal and the three targets.
+    // Either can leave, and the narrower table wins.
+    layout(
+        &area_b(concat!(
+            "MOVE COB-MIL TO DB2-MIL\n",
+            "MOVE '0000-00-00-00.00.00' TO DB2-REST\n",
+            "MOVE '-' TO DB2-STREEP-1 DB2-STREEP-2 DB2-STREEP-3\n",
+            "MOVE '.' TO DB2-DOT-1 DB2-DOT-2 DB2-DOT-3\n",
+            "SET WS-DONE TO TRUE"
+        )),
+        &area_b(concat!(
+            "MOVE COB-MIL TO DB2-MIL\n",
+            "MOVE '0000-00-00-00.00.00' TO DB2-REST\n",
+            "MOVE '-'     TO DB2-STREEP-1 DB2-STREEP-2 DB2-STREEP-3\n",
+            "MOVE '.'     TO DB2-DOT-1 DB2-DOT-2 DB2-DOT-3\n",
+            "SET  WS-DONE TO TRUE"
+        )),
+    );
+    // One long source would push three rows out, so it leaves instead.
+    layout(
+        &area_b(concat!(
+            "MOVE 'Y' TO WS-ERR-FLG\n",
+            "MOVE 'Category CD can NOT be empty...' TO WS-MESSAGE\n",
+            "MOVE -1 TO TCATCDL OF COTRN2AI-WITH-A-LONG-NAME\n",
+            "MOVE SPACES TO TCATCDI OF COTRN2AI-WITH-A-LONG-NAME\n",
+            "MOVE ZERO TO TCATCDO OF COTRN2AI-WITH-A-LONG-NAME"
+        )),
+        &area_b(concat!(
+            "MOVE 'Y'    TO WS-ERR-FLG\n",
+            "MOVE 'Category CD can NOT be empty...' TO WS-MESSAGE\n",
+            "MOVE -1     TO TCATCDL OF COTRN2AI-WITH-A-LONG-NAME\n",
+            "MOVE SPACES TO TCATCDI OF COTRN2AI-WITH-A-LONG-NAME\n",
+            "MOVE ZERO   TO TCATCDO OF COTRN2AI-WITH-A-LONG-NAME"
+        )),
+    );
+}
+
+#[test]
+fn a_record_that_ends_with_to_continues_at_to_instead() {
+    let input = [
+        card("000100", ' ', "    MOVE 'Y' TO WS-ERR-FLG", "ID000001"),
+        card(
+            "000200",
+            ' ',
+            "    MOVE 'Category CD can NOT be empty...' TO",
+            "ID000002",
+        ),
+        card("000300", ' ', "         WS-MESSAGE", "ID000003"),
+        card(
+            "000400",
+            ' ',
+            "    MOVE -1 TO TCATCDL OF COTRN2AI",
+            "ID000004",
+        ),
+    ];
+    let expected = [
+        card("000100", ' ', "    MOVE 'Y' TO WS-ERR-FLG", "ID000001"),
+        card(
+            "000200",
+            ' ',
+            "    MOVE 'Category CD can NOT be empty...'",
+            "ID000002",
+        ),
+        card("000300", ' ', "      TO WS-MESSAGE", "ID000003"),
+        card(
+            "000400",
+            ' ',
+            "    MOVE -1  TO TCATCDL OF COTRN2AI",
+            "ID000004",
+        ),
+    ];
+    layout(&input.join("\n"), &expected.join("\n"));
 }

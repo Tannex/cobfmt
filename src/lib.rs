@@ -4,8 +4,9 @@ mod layout;
 mod source;
 
 use layout::{
-    Cells, Scopes, align, assignment, clauses, collapse_gaps, condition, fits, move_to_indent,
-    operand_column, subscript, subscript_column, to_token, width_before, wrap,
+    Cells, Place, Scopes, align, assignment, clauses, collapse_gaps, condition, fits,
+    move_to_indent, operand_column, source_width, subscript, subscript_column, to_token,
+    width_before, wrap,
 };
 use source::{Action, Card, Record, cards, is_clause, records};
 
@@ -147,6 +148,26 @@ impl Row<'_> {
     }
 }
 
+/// A MOVE or SET that ends a record with TO continues at TO instead, so the
+/// keyword stays with its targets.
+fn lead_with_to(record: &mut Record<'_>) {
+    let lexed = source::tokens(&record.code);
+    let assignment = lexed
+        .first()
+        .is_some_and(|t| t.text.eq_ignore_ascii_case("MOVE") || t.text.eq_ignore_ascii_case("SET"));
+    let Some(to) = to_token(&record.code).filter(|_| assignment) else {
+        return;
+    };
+    if record.anchors.iter().any(|&(token, _)| token == to) {
+        return;
+    }
+    for (token, _) in record.anchors.iter_mut().skip(1) {
+        if *token == to + 1 {
+            *token = to;
+        }
+    }
+}
+
 /// Format newline-delimited, UTF-8 fixed-format records from a checkout.
 pub fn format_source(source: &str) -> Result<String, String> {
     let cards = cards(source)?;
@@ -162,8 +183,11 @@ pub fn format_source(source: &str) -> Result<String, String> {
     let mut scopes = Scopes::default();
     let rows: Vec<_> = records(cards)?
         .into_iter()
-        .map(|record| {
+        .map(|mut record| {
             let depth = scopes.indent(&record.code);
+            if record.action == Action::Format {
+                lead_with_to(&mut record);
+            }
             let cells = if record.action == Action::Format {
                 let anchors: Vec<_> = record.anchors.iter().map(|&(token, _)| token).collect();
                 assignment(&record.code, &anchors)
@@ -198,25 +222,64 @@ pub fn format_source(source: &str) -> Result<String, String> {
             .take_while(|r| r.depth == row.depth && r.cells.is_some())
             .collect();
         let cells: Vec<_> = members.iter().filter_map(|r| r.cells.as_ref()).collect();
-        let mut split: Vec<_> = members.iter().map(|r| r.split_before_to()).collect();
-        let mut forced = vec![false; members.len()];
-        // While a row is too wide for the table, the widest one continues at TO
-        // and the table is laid out again.
-        let lines = loop {
-            let lines = align(&cells, &split);
-            let width = |i: usize| {
-                let next = members[i].record.anchors.get(1).map(|&(token, _)| token);
-                width_before(&lines[i], next)
-            };
-            let widest = (0..members.len())
-                .filter(|&i| !split[i] && !fits(row.depth, width(i)))
-                .max_by_key(|&i| (width(i), std::cmp::Reverse(i)));
-            let Some(i) = widest else {
-                break lines;
-            };
-            split[i] = true;
-            forced[i] = true;
+        let width = |lines: &[String], i: usize| {
+            let next = members[i].record.anchors.get(1).map(|&(token, _)| token);
+            width_before(&lines[i], next)
         };
+        let overflow = |places: &[Place]| -> Vec<usize> {
+            let lines = align(&cells, places);
+            (0..members.len())
+                .filter(|&i| places[i] != Place::Split && !fits(row.depth, width(&lines, i)))
+                .collect()
+        };
+        // A row too wide for one record continues at TO.
+        let mut forced = vec![false; members.len()];
+        for i in overflow(&vec![Place::Alone; members.len()]) {
+            forced[i] = !members[i].split_before_to();
+        }
+        let split: Vec<_> = (0..members.len())
+            .map(|i| forced[i] || members[i].split_before_to())
+            .collect();
+        // The table takes the rows whose source is no wider than a limit, less
+        // the rows that are then too wide for it. The limit that keeps the
+        // most rows wins, the narrower on a tie, and each other row goes on a
+        // record of its own.
+        let mut limits: Vec<_> = (0..members.len())
+            .filter(|&i| !split[i])
+            .map(|i| source_width(cells[i]))
+            .collect();
+        limits.sort_unstable();
+        limits.dedup();
+        let mut places: Vec<_> = split
+            .iter()
+            .map(|&split| if split { Place::Split } else { Place::Alone })
+            .collect();
+        let mut most = 0;
+        for &limit in &limits {
+            let mut trial: Vec<_> = (0..members.len())
+                .map(|i| match (split[i], source_width(cells[i]) <= limit) {
+                    (true, _) => Place::Split,
+                    (false, true) => Place::Table,
+                    (false, false) => Place::Alone,
+                })
+                .collect();
+            loop {
+                let lines = align(&cells, &trial);
+                let widest = overflow(&trial)
+                    .into_iter()
+                    .max_by_key(|&i| (width(&lines, i), std::cmp::Reverse(i)));
+                let Some(i) = widest else {
+                    break;
+                };
+                trial[i] = Place::Alone;
+            }
+            let count = trial.iter().filter(|&&p| p == Place::Table).count();
+            if count > most {
+                most = count;
+                places = trial;
+            }
+        }
+        let lines = align(&cells, &places);
         for ((member, line), &forced) in members.iter().zip(&lines).zip(&forced) {
             member.write(&mut out, line, forced, newline, padded, &mut pending_to)?;
         }

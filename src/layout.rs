@@ -175,16 +175,17 @@ impl Scopes {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Column {
     Verb,
-    Source(usize),
-    Destination(usize),
+    Source,
+    Destination,
     /// Operands on continuation records after the first target.
     Tail,
 }
 
 pub(crate) type Cells = BTreeMap<Column, String>;
 
-/// Split a MOVE or SET … TO into table cells. `anchors` holds the token that
-/// starts each record of the statement.
+/// Split a MOVE or SET … TO into table cells: the verb, the source with its
+/// qualifiers, and TO with its targets. `anchors` holds the token that starts
+/// each record of the statement.
 pub(crate) fn assignment(code: &str, anchors: &[usize]) -> Option<Cells> {
     let lexed = tokens(code);
     // The table ends where a continuation record starts with an operand.
@@ -197,50 +198,47 @@ pub(crate) fn assignment(code: &str, anchors: &[usize]) -> Option<Cells> {
     if !(verb.eq_ignore_ascii_case("MOVE") || verb.eq_ignore_ascii_case("SET")) {
         return None;
     }
-    let mut starts = vec![(Column::Verb, 0), (Column::Source(0), verb.len())];
-    let mut destination = false;
-    let mut qualifier = 0;
-    for token in lexed[1..].iter().take_while(|t| t.start < tail) {
-        if token.text.eq_ignore_ascii_case("TO") {
-            if destination {
-                return None;
-            }
-            destination = true;
-            qualifier = 0;
-        } else if token.text.eq_ignore_ascii_case("IN") || token.text.eq_ignore_ascii_case("OF") {
-            qualifier += 1;
-        } else {
-            continue;
-        }
-        let key = if destination {
-            Column::Destination(qualifier)
-        } else {
-            Column::Source(qualifier)
-        };
-        starts.push((key, token.start));
-    }
-    if !destination {
+    let end = lexed.partition_point(|t| t.start < tail);
+    let mut keywords = (1..end).filter(|&i| lexed[i].text.eq_ignore_ascii_case("TO"));
+    let to = keywords.next()?;
+    if keywords.next().is_some() {
         return None;
     }
-    let ends = starts.iter().skip(1).map(|&(_, i)| i).chain([tail]);
+    // One space wherever the source has any, so that the table does not
+    // depend on the spacing it replaces.
+    let squeeze = |from: usize, to: usize| {
+        let mut text = String::new();
+        for i in from..to {
+            let previous_end = lexed[i - 1].start + lexed[i - 1].text.len();
+            if i > from && lexed[i].start > previous_end {
+                text.push(' ');
+            }
+            text.push_str(lexed[i].text);
+        }
+        text
+    };
     let mut cells = Cells::new();
+    cells.insert(Column::Verb, verb.to_owned());
+    cells.insert(Column::Source, squeeze(1, to));
+    cells.insert(Column::Destination, squeeze(to, end));
     if tail < code.len() {
         cells.insert(Column::Tail, code[tail..].trim().to_owned());
-    }
-    for (&(column, start), end) in starts.iter().zip(ends) {
-        let text = code[start..end].trim();
-        // Canonicalize the gap after a column keyword while keeping its operand intact.
-        let value = match (column, text.split_once(char::is_whitespace)) {
-            (Column::Verb | Column::Source(0), _) | (_, None) => text.to_owned(),
-            (_, Some((keyword, operand))) => format!("{keyword} {}", operand.trim_start()),
-        };
-        cells.insert(column, value);
     }
     Some(cells)
 }
 
-/// Lay the rows out as a table. Each keyword role is one column, as wide as its
-/// widest cell. A row without that keyword leaves the cell blank.
+/// Where a row of an assignment group is laid out.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Place {
+    /// In the table, with TO in the shared column.
+    Table,
+    /// On one record of its own, because the table has no room for it.
+    Alone,
+    /// With TO on a later record.
+    Split,
+}
+
+/// Lay the rows out as a table. Each column is as wide as its widest cell.
 fn tabulate(rows: &[&Cells], verb: usize, wanted: impl Fn(&Column) -> bool) -> Vec<String> {
     let mut lines = vec![String::new(); rows.len()];
     let columns: BTreeSet<_> = rows
@@ -265,12 +263,13 @@ fn tabulate(rows: &[&Cells], verb: usize, wanted: impl Fn(&Column) -> bool) -> V
     lines
 }
 
-/// Align a group of assignments. A row that keeps TO on its verb's record joins
-/// one table. A row with TO on a later record aligns its source and its
-/// destination with the other such rows.
-pub(crate) fn align(group: &[&Cells], split: &[bool]) -> Vec<String> {
-    let pick =
-        |wanted: bool| -> Vec<usize> { (0..group.len()).filter(|&i| split[i] == wanted).collect() };
+/// Align a group of assignments. The rows in the table share the TO column.
+/// A row on its own keeps only the verb column. The rows with TO on a later
+/// record align their sources and their destinations with each other.
+pub(crate) fn align(group: &[&Cells], places: &[Place]) -> Vec<String> {
+    let pick = |wanted: Place| -> Vec<usize> {
+        (0..group.len()).filter(|&i| places[i] == wanted).collect()
+    };
     let mut lines = vec![String::new(); group.len()];
     let verb = group
         .iter()
@@ -278,20 +277,28 @@ pub(crate) fn align(group: &[&Cells], split: &[bool]) -> Vec<String> {
         .map(|v| v.chars().count())
         .max()
         .unwrap_or(0);
-    let whole = pick(false);
+    let whole = pick(Place::Table);
     let rows: Vec<_> = whole.iter().map(|&i| group[i]).collect();
     for (&i, line) in whole.iter().zip(tabulate(&rows, verb, |_| true)) {
         lines[i] = line;
     }
-    let broken = pick(true);
+    for i in pick(Place::Alone) {
+        lines[i] = tabulate(&[group[i]], verb, |_| true).remove(0);
+    }
+    let broken = pick(Place::Split);
     let rows: Vec<_> = broken.iter().map(|&i| group[i]).collect();
-    let destination = |column: &Column| matches!(column, Column::Destination(_) | Column::Tail);
+    let destination = |column: &Column| matches!(column, Column::Destination | Column::Tail);
     let sources = tabulate(&rows, verb, |column| !destination(column));
     let destinations = tabulate(&rows, verb, destination);
     for ((&i, source), target) in broken.iter().zip(sources).zip(destinations) {
         lines[i] = format!("{source} {target}");
     }
     lines
+}
+
+/// Width of the source cell of a row.
+pub(crate) fn source_width(cells: &Cells) -> usize {
+    cells.get(&Column::Source).map_or(0, |s| s.chars().count())
 }
 
 /// Index of the TO keyword of an assignment.
