@@ -97,8 +97,12 @@ Formatted output:
 - Preserve `COPY`, `COPY … REPLACING`, standalone `REPLACE`, and `REPLACE OFF`
   verbatim, including multiline `==…==` operands. Formatting a source member
   does not require its copybooks.
-- Preserve keyword case, declarations, and embedded `EXEC … END-EXEC` blocks.
-  This version expects each new procedure statement on its own record.
+- Preserve keyword case and declarations. Keep the text of an embedded
+  `EXEC … END-EXEC` block as written, and move the block as a whole so that
+  `EXEC` starts where a statement at that depth does. Every record of the
+  block shifts by the same number of columns. Leave the block in place when a
+  record would start before column 12 or cross column 72.
+- This version expects each new procedure statement on its own record.
 
 ## Run it
 

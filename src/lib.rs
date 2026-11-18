@@ -5,8 +5,8 @@ mod source;
 
 use layout::{
     Cells, Place, Scopes, align, assignment, clauses, collapse_gaps, condition, fits,
-    move_to_indent, operand_column, source_width, subscript, subscript_column, to_token,
-    width_before, wrap,
+    move_to_indent, operand_column, source_width, statement_column, subscript, subscript_column,
+    to_token, width_before, wrap,
 };
 use source::{Action, Card, Record, cards, is_clause, records};
 
@@ -148,6 +148,45 @@ impl Row<'_> {
     }
 }
 
+/// Move an embedded EXEC block as a whole so that EXEC starts where a
+/// statement at `depth` does. Every record shifts by the same number of
+/// columns. `None` when the block is in place already or cannot move: a record
+/// would leave Area B, or a hyphen continues a literal.
+fn shift_block(rows: &[Row<'_>], depth: usize) -> Option<Vec<String>> {
+    let leading = |area: &str| area.chars().take_while(|&c| c == ' ').count();
+    let first = leading(rows.first()?.record.first().area);
+    let target = statement_column(depth);
+    if first == target {
+        return None;
+    }
+    let mut lines = Vec::new();
+    for row in rows {
+        let card = row.record.first();
+        if row.record.action == Action::Blank || matches!(card.indicator, '*' | '/' | 'D' | 'd') {
+            lines.push(card.raw.to_owned());
+            continue;
+        }
+        if card.indicator != ' ' || card.raw.contains('\t') {
+            return None;
+        }
+        let text = card.area.trim();
+        let column = (leading(card.area) + target).checked_sub(first)?;
+        let width = column + text.chars().count();
+        if column < statement_column(0) || width > 65 {
+            return None;
+        }
+        let mut line = format!("{}{}{:column$}{text}", card.sequence, card.indicator, "");
+        // Keep the identification field, or the record's padding, in place.
+        let area = card.area.chars().count();
+        let trailing = area - card.area.trim_end().chars().count();
+        let padding = if area == 65 { 65 - width } else { trailing };
+        line.extend(std::iter::repeat_n(' ', padding));
+        line.push_str(card.identification);
+        lines.push(line);
+    }
+    Some(lines)
+}
+
 /// A MOVE or SET that ends a record with TO continues at TO instead, so the
 /// keyword stays with its targets.
 fn lead_with_to(record: &mut Record<'_>) {
@@ -208,6 +247,21 @@ pub fn format_source(source: &str) -> Result<String, String> {
         if row.record.action == Action::Blank {
             out.push_str(row.record.first().raw);
             out.push_str(row.record.ending);
+            remaining = rest;
+            continue;
+        }
+        if row.record.exec != 0 {
+            let block = remaining
+                .iter()
+                .take_while(|r| r.record.exec == row.record.exec)
+                .count();
+            let (block, rest) = remaining.split_at(block);
+            let shifted = shift_block(block, row.depth);
+            for (i, member) in block.iter().enumerate() {
+                let raw = member.record.first().raw;
+                out.push_str(shifted.as_ref().map_or(raw, |lines| &lines[i]));
+                out.push_str(member.record.ending);
+            }
             remaining = rest;
             continue;
         }

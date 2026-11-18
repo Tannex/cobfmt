@@ -295,12 +295,14 @@ fn keeps_area_a_data_and_procedure_headers_and_embedded_sql() {
         "000050 PROCEDURE DIVISION.\n000060 READ-IT SECTION.\n000070 P1.\n"
     );
     let sql = "000080     EXEC SQL\n               SELECT  x  FROM  tab\n           END-EXEC\n";
+    let moved =
+        "000080        EXEC SQL\n                  SELECT  x  FROM  tab\n              END-EXEC\n";
     layout(
         &format!(
             "{prefix}           IF active\n{sql}           DISPLAY 1\n           END-IF.\n       END PROGRAM T.\n"
         ),
         &format!(
-            "{prefix}           IF active\n{sql}              DISPLAY 1\n           END-IF.\n       END PROGRAM T.\n"
+            "{prefix}           IF active\n{moved}              DISPLAY 1\n           END-IF.\n       END PROGRAM T.\n"
         ),
     );
     let copybook = "000010 01  MY-GROUP.\n000020     05   X PIC X.\n";
@@ -705,4 +707,47 @@ fn a_record_that_ends_with_to_continues_at_to_instead() {
         ),
     ];
     layout(&input.join("\n"), &expected.join("\n"));
+}
+
+#[test]
+fn an_exec_block_moves_as_a_whole_with_the_code_around_it() {
+    let input = [
+        card("000100", ' ', "    IF CDEMO-USRTYP-ADMIN", "ID000001"),
+        card("000200", ' ', "            EXEC CICS XCTL", "ID000002"),
+        card(
+            "000300",
+            ' ',
+            "              PROGRAM ('COADM01C')",
+            "ID000003",
+        ),
+        card("000400", '*', "    stays where it is", "ID000004"),
+        card("000500", ' ', "            END-EXEC", "ID000005"),
+        card("000600", ' ', "    END-IF", "ID000006"),
+        card("000700", ' ', "     EXEC DLI GN", "ID000007"),
+        card("000800", ' ', "          SEGMENT (PAUTSUM0)", "ID000008"),
+        card("000900", ' ', "     END-EXEC.", "ID000009"),
+    ];
+    let expected = [
+        card("000100", ' ', "    IF CDEMO-USRTYP-ADMIN", "ID000001"),
+        card("000200", ' ', "       EXEC CICS XCTL", "ID000002"),
+        card("000300", ' ', "         PROGRAM ('COADM01C')", "ID000003"),
+        card("000400", '*', "    stays where it is", "ID000004"),
+        card("000500", ' ', "       END-EXEC", "ID000005"),
+        card("000600", ' ', "    END-IF", "ID000006"),
+        card("000700", ' ', "    EXEC DLI GN", "ID000007"),
+        card("000800", ' ', "         SEGMENT (PAUTSUM0)", "ID000008"),
+        card("000900", ' ', "    END-EXEC.", "ID000009"),
+    ];
+    layout(&input.join("\n"), &expected.join("\n"));
+}
+
+#[test]
+fn an_exec_block_that_would_leave_area_b_stays_in_place() {
+    // A record of the block would start in Area A.
+    let left = area_b("IF active\n        EXEC SQL\n   SELECT x\n        END-EXEC\nEND-IF");
+    layout(&left, &left);
+    // A record of the block would cross column 72.
+    let wide = format!("SELECT {}", "x".repeat(53));
+    let right = area_b(&format!("IF active\nEXEC SQL\n{wide}\nEND-EXEC\nEND-IF"));
+    layout(&right, &right);
 }

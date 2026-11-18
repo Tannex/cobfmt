@@ -317,6 +317,11 @@ pub(crate) fn width_before(line: &str, token: Option<usize>) -> usize {
     line[..end].trim_end().chars().count()
 }
 
+/// Column within columns 8 through 72 where a statement at `depth` starts.
+pub(crate) fn statement_column(depth: usize) -> usize {
+    4 + INDENT * depth
+}
+
 pub(crate) fn fits(depth: usize, width: usize) -> bool {
     INDENT * depth + width <= AREA_B_WIDTH
 }

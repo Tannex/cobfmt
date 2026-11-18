@@ -230,7 +230,7 @@ pub(crate) struct Card<'a> {
     pub area: &'a str,
     pub identification: &'a str,
     pub width: usize,
-    indicator: char,
+    pub indicator: char,
     control: bool,
     protected: bool,
 }
@@ -310,6 +310,9 @@ pub(crate) struct Record<'a> {
     pub action: Action,
     /// Continues a statement that a comment or a kept record separates it from.
     pub orphan: bool,
+    /// Numbers the embedded EXEC block in the procedure that this record
+    /// belongs to. Zero outside a block.
+    pub exec: usize,
     token_count: usize,
 }
 
@@ -432,6 +435,8 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
     let mut preprocessor = None;
     let mut first_code = true;
     let mut open_sentence = false;
+    let mut blocks = 0;
+    let mut block = 0;
     for card in cards {
         let mut code = card.area.trim();
         let mut action = Action::Keep;
@@ -469,6 +474,7 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
                     ending: card.ending,
                     action: Action::Keep,
                     orphan: false,
+                    exec: 0,
                     token_count: 0,
                 });
                 continue;
@@ -493,6 +499,10 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
                 procedure = false;
             }
             if first.eq_ignore_ascii_case("EXEC") {
+                if procedure && !embedded {
+                    blocks += 1;
+                    block = blocks;
+                }
                 embedded = true;
             }
 
@@ -586,8 +596,12 @@ pub(crate) fn records(cards: Vec<Card<'_>>) -> Result<Vec<Record<'_>>, String> {
             ending: card.ending,
             action,
             orphan,
+            exec: block,
             token_count: count,
         });
+        if !embedded {
+            block = 0;
+        }
     }
     if let Some(state) = preprocessor {
         return Err(format!(
